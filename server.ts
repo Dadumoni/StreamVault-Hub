@@ -407,13 +407,19 @@ async function startServer() {
 
   // --- VITE AND STATIC FILE SERVING ---
 
-  if (process.env.NODE_ENV !== "production") {
+  const isProduction = 
+    process.env.NODE_ENV === "production" || 
+    (!process.env.DISABLE_HMR && fs.existsSync(path.join(process.cwd(), "dist", "index.html")));
+
+  if (!isProduction) {
+    console.log("[Server] Starting in development mode with Vite middleware...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
+    console.log("[Server] Starting in production mode serving static files...");
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
