@@ -11,10 +11,28 @@ import https from "https";
 // Load environment variables
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Support both ESM and CJS environments safely without TypeScript block-scope errors
+const getAppDirname = (): string => {
+  try {
+    if (import.meta && import.meta.url) {
+      return path.dirname(fileURLToPath(import.meta.url));
+    }
+  } catch (e) {}
+  
+  try {
+    // @ts-ignore
+    if (typeof __dirname !== "undefined" && __dirname) {
+      // @ts-ignore
+      return __dirname;
+    }
+  } catch (e) {}
 
-const DB_PATH = path.join(__dirname, "src", "db", "videos.json");
+  return process.cwd();
+};
+
+const currentDirname = getAppDirname();
+
+const DB_PATH = path.join(currentDirname, "src", "db", "videos.json");
 
 // Define custom session store
 interface DownloadSession {
