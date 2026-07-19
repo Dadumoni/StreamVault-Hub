@@ -5,6 +5,8 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from "url";
 import { MongoClient } from "mongodb";
+import http from "http";
+import https from "https";
 
 // Load environment variables
 dotenv.config();
@@ -162,6 +164,18 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // --- HEALTH & AUTO-PING ROUTES ---
+
+  // Health check routes
+  app.get(["/health", "/api/health"], (req, res) => {
+    res.json({
+      status: "ok",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      mongodbConnected: isMongoActive
+    });
+  });
 
   // --- API ROUTES ---
 
@@ -392,7 +406,42 @@ async function startServer() {
   // Bind to port 3000 and 0.0.0.0
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running at http://0.0.0.0:${PORT}`);
+    setupAutoPing();
   });
+}
+
+function setupAutoPing() {
+  const selfUrl = process.env.SELF_URL || process.env.APP_URL;
+  if (!selfUrl) {
+    console.log("[Auto-Ping] Auto-ping is disabled. Configure SELF_URL or APP_URL in environment variables to enable.");
+    return;
+  }
+
+  const intervalMinutes = parseInt(process.env.PING_INTERVAL_MINUTES || "5", 10);
+  const intervalMs = intervalMinutes * 60 * 1000;
+  console.log(`[Auto-Ping] Initialized self-ping for ${selfUrl} every ${intervalMinutes} minutes.`);
+
+  // Self-pinger function
+  const ping = () => {
+    const targetUrl = `${selfUrl.replace(/\/$/, "")}/api/health`;
+    console.log(`[Auto-Ping] Pinging endpoint: ${targetUrl}`);
+    try {
+      const client = targetUrl.startsWith("https") ? https : http;
+      client.get(targetUrl, (res) => {
+        console.log(`[Auto-Ping] Ping response code: ${res.statusCode}`);
+      }).on("error", (err) => {
+        console.error(`[Auto-Ping] Ping request failed: ${err.message}`);
+      });
+    } catch (err: any) {
+      console.error(`[Auto-Ping] Unexpected error during ping: ${err.message}`);
+    }
+  };
+
+  // Run initial ping after 30 seconds to allow the server to fully start
+  setTimeout(ping, 30 * 1000);
+
+  // Set interval for continuous pinging
+  setInterval(ping, intervalMs);
 }
 
 startServer();
