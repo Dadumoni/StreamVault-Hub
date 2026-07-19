@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { Video } from "../types";
 import Plyr from "plyr";
+import Hls from "hls.js";
+import "plyr/dist/plyr.css";
 import { 
   ArrowLeft, Download, Share2, Eye, Calendar, Clock, 
   Copy, Check, Facebook, Twitter, Mail, HelpCircle, Film, Sparkles, ExternalLink
@@ -23,6 +25,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const plyrInstance = useRef<Plyr | null>(null);
+  const hlsInstance = useRef<Hls | null>(null);
 
   // Fetch application configuration (including channelLink) on mount
   useEffect(() => {
@@ -68,15 +71,26 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
     fetchVideoDetails();
   }, [slug]);
 
-  // Initialize Plyr instance when video details load
+  // Initialize Plyr and HLS
   useEffect(() => {
-    if (video && videoRef.current) {
-      // Clean up previous instance if any
-      if (plyrInstance.current) {
-        plyrInstance.current.destroy();
-      }
+    if (!video || !videoRef.current) return;
 
-      plyrInstance.current = new Plyr(videoRef.current, {
+    const videoElement = videoRef.current;
+    const source = video.videoUrl;
+    const isHls = source.toLowerCase().includes(".m3u8");
+
+    // Clean up previous instances
+    if (plyrInstance.current) {
+      plyrInstance.current.destroy();
+      plyrInstance.current = null;
+    }
+    if (hlsInstance.current) {
+      hlsInstance.current.destroy();
+      hlsInstance.current = null;
+    }
+
+    const initPlyr = () => {
+      const player = new Plyr(videoElement, {
         controls: [
           "play-large",
           "play",
@@ -95,6 +109,27 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         keyboard: { global: true },
         ratio: "16:9",
       });
+      plyrInstance.current = player;
+    };
+
+    if (isHls) {
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(source);
+        hls.attachMedia(videoElement);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          initPlyr();
+        });
+        hlsInstance.current = hls;
+      } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
+        // Native HLS support (Safari)
+        videoElement.src = source;
+        initPlyr();
+      }
+    } else {
+      // Regular MP4
+      videoElement.src = source;
+      initPlyr();
     }
 
     return () => {
@@ -102,8 +137,12 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         plyrInstance.current.destroy();
         plyrInstance.current = null;
       }
+      if (hlsInstance.current) {
+        hlsInstance.current.destroy();
+        hlsInstance.current = null;
+      }
     };
-  }, [video]);
+  }, [video?.slug, video?.videoUrl]);
 
   const handleCopyLink = () => {
     const streamLink = `${window.location.origin}/${slug}`;
@@ -172,16 +211,14 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         id="video-player-card"
         >
           {/* Custom video element container styled with Plyr overrides */}
-          <div className="relative aspect-video w-full bg-black overflow-hidden group">
+          <div key={video.slug} className="w-full bg-black overflow-hidden group">
             <video
               ref={videoRef}
               playsInline
-              controls
-              crossOrigin="anonymous"
+              className="plyr w-full h-full"
               poster={video.thumbnailUrl}
-              className="w-full h-full"
+              crossOrigin="anonymous"
             >
-              <source src={video.videoUrl} type="video/mp4" />
               Your browser does not support the video tag.
             </video>
           </div>

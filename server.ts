@@ -32,8 +32,16 @@ const getAppDirname = (): string => {
 
 const currentDirname = getAppDirname();
 
-const DB_PATH = path.join(currentDirname, "src", "db", "videos.json");
-const LOGS_PATH = path.join(currentDirname, "src", "db", "view_logs.json");
+const getDbPath = (filename: string): string => {
+  const cwdPath = path.join(process.cwd(), "src", "db", filename);
+  if (fs.existsSync(cwdPath)) {
+    return cwdPath;
+  }
+  return path.join(currentDirname, "src", "db", filename);
+};
+
+const DB_PATH = getDbPath("videos.json");
+const LOGS_PATH = getDbPath("view_logs.json");
 
 // Generate mixed random letters, numbers, and characters slug (e.g. Fsj_te39c7)
 function generateRandomSlug(length = 10): string {
@@ -149,6 +157,24 @@ async function ensureMongoSchemaAndColumns(db: any) {
     // Auto-migrate: If any existing document is missing standard fields (columns), update them automatically!
     const defaultThumbnail = "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=60";
     const defaultDate = new Date().toISOString().split("T")[0];
+
+    // Auto-migrate legacy blocked/restricted Google Cloud Storage URLs to reliable ones
+    try {
+      await col.updateOne(
+        { slug: "sintel-cosmic-tale", videoUrl: /gtv-videos-bucket/i },
+        { $set: { videoUrl: "https://vjs.zencdn.net/v/oceans.mp4", downloadUrl: "https://vjs.zencdn.net/v/oceans.mp4" } }
+      );
+      await col.updateOne(
+        { slug: "big-buck-bunny", videoUrl: /gtv-videos-bucket/i },
+        { $set: { videoUrl: "https://www.w3schools.com/html/mov_bbb.mp4", downloadUrl: "https://www.w3schools.com/html/mov_bbb.mp4" } }
+      );
+      await col.updateOne(
+        { slug: "tears-of-steel-sci-fi", videoUrl: /gtv-videos-bucket/i },
+        { $set: { videoUrl: "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4", downloadUrl: "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4" } }
+      );
+    } catch (migErr) {
+      console.warn("Could not migrate legacy URLs, continuing anyway:", migErr);
+    }
 
     await col.updateMany({ title: { $exists: false } }, { $set: { title: "Untitled Stream" } });
     await col.updateMany({ description: { $exists: false } }, { $set: { description: "" } });
