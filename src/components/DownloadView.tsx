@@ -281,9 +281,6 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
               <span className="text-xs font-mono font-semibold opacity-75">Ready to Download</span>
             </div>
             <h1 className="text-lg font-display font-extrabold tracking-tight line-clamp-1">{video.title}</h1>
-            <p className={`text-xs leading-relaxed line-clamp-2 ${darkMode ? "text-zinc-400" : "text-zinc-500"}`}>
-              {video.description}
-            </p>
           </div>
         </div>
 

@@ -245,15 +245,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
               </div>
             </div>
 
-            {/* Description Text */}
-            <div className="space-y-3">
-              <h3 className="font-display font-bold text-sm tracking-wide opacity-90">About this Stream</h3>
-              <p className={`text-sm leading-relaxed max-w-4xl font-sans ${
-                darkMode ? "text-zinc-400" : "text-zinc-600"
-              }`}>
-                {video.description}
-              </p>
-            </div>
+
           </div>
         </div>
 

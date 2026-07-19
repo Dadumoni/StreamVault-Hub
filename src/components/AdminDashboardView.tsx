@@ -7,6 +7,7 @@ import {
   Calendar, Clock, Film, Sparkles, ExternalLink, Lock
 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
+import { generateRandomSlug } from "./HomeView";
 
 interface AdminDashboardViewProps {
   darkMode: boolean;
@@ -145,7 +146,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
     setEditingVideo(null);
     setFormData({
       title: "",
-      slug: "",
+      slug: generateRandomSlug(10),
       description: "",
       videoUrl: "",
       downloadUrl: "",
@@ -830,7 +831,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                     <thead>
                       <tr className={`border-b ${darkMode ? "border-zinc-900 text-zinc-400" : "border-zinc-200 text-zinc-600"} font-semibold`}>
                         <th className="pb-3 pr-4">Thumbnail</th>
-                        <th className="pb-3 px-4">Title & Description</th>
+                        <th className="pb-3 px-4">Title</th>
                         <th className="pb-3 px-4">Custom Slug</th>
                         <th className="pb-3 px-4">Duration</th>
                         <th className="pb-3 px-4 text-center">Views</th>
@@ -853,12 +854,9 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                                 />
                               </div>
                             </td>
-                            {/* Title & Description */}
+                            {/* Title */}
                             <td className="py-3.5 px-4 max-w-[200px]">
                               <div className="font-bold opacity-90 truncate">{video.title}</div>
-                              <div className="text-[10px] opacity-40 truncate mt-0.5" title={video.description}>
-                                {video.description || "No description."}
-                              </div>
                             </td>
                             {/* Slug path */}
                             <td className="py-3.5 px-4 font-mono text-[10px] text-violet-400">
@@ -1017,19 +1015,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[10px] uppercase tracking-wide font-bold opacity-70">Description</label>
-                <textarea
-                  name="description"
-                  rows={2}
-                  value={formData.description}
-                  onChange={handleInputChange}
-                  placeholder="Enter video metadata synopsis..."
-                  className={`w-full px-3.5 py-2 rounded-xl border text-xs outline-none transition-all focus:ring-2 focus:ring-violet-500 ${
-                    darkMode ? "bg-zinc-950 border-zinc-800 focus:border-violet-500" : "bg-zinc-50 border-zinc-200 focus:border-violet-500"
-                  }`}
-                />
-              </div>
+
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1">

@@ -35,6 +35,16 @@ const currentDirname = getAppDirname();
 const DB_PATH = path.join(currentDirname, "src", "db", "videos.json");
 const LOGS_PATH = path.join(currentDirname, "src", "db", "view_logs.json");
 
+// Generate mixed random letters, numbers, and characters slug (e.g. Fsj_te39c7)
+function generateRandomSlug(length = 10): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 // Define custom session store
 interface DownloadSession {
   slug: string;
@@ -434,12 +444,12 @@ async function startServer() {
         return res.status(400).json({ error: "Title, Video URL, and Download URL are required" });
       }
 
-      const videoSlug = slug || title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      const videoSlug = slug || generateRandomSlug(10);
       
       const newVideo = {
         slug: videoSlug,
         title,
-        description: description || "No description provided.",
+        description: "",
         videoUrl,
         downloadUrl,
         thumbnailUrl: thumbnailUrl || "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=60",
@@ -468,7 +478,7 @@ async function startServer() {
 
       const fieldsToUpdate: any = {};
       if (title !== undefined) fieldsToUpdate.title = title;
-      if (description !== undefined) fieldsToUpdate.description = description;
+      fieldsToUpdate.description = "";
       if (videoUrl !== undefined) fieldsToUpdate.videoUrl = videoUrl;
       if (downloadUrl !== undefined) fieldsToUpdate.downloadUrl = downloadUrl;
       if (thumbnailUrl !== undefined) fieldsToUpdate.thumbnailUrl = thumbnailUrl;

@@ -3,6 +3,16 @@ import { Video } from "../types";
 import { Play, Flame, Film, PlusCircle, ArrowRight, Eye, Calendar, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
 
+// Generate mixed random letters, numbers, and characters slug (e.g. Fsj_te39c7)
+export function generateRandomSlug(length = 10): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 interface HomeViewProps {
   darkMode: boolean;
   navigate: (path: string) => void;
@@ -48,17 +58,10 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData((prev) => {
-      const updated = { ...prev, [name]: value };
-      // Auto-generate slug from title if slug was not manually touched
-      if (name === "title" && !prev.slug) {
-        updated.slug = value
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/(^-|-$)/g, "");
-      }
-      return updated;
-    });
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value
+    }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -151,7 +154,20 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
               )}
               
               <button
-                onClick={() => setShowAddForm(!showAddForm)}
+                onClick={() => {
+                  const randomSlug = generateRandomSlug(10);
+                  setFormData(prev => ({
+                    ...prev,
+                    title: "",
+                    slug: randomSlug,
+                    description: "",
+                    videoUrl: "",
+                    downloadUrl: "",
+                    thumbnailUrl: "",
+                    duration: "05:00"
+                  }));
+                  setShowAddForm(!showAddForm);
+                }}
                 className={`flex items-center gap-2 px-6 py-3 rounded-xl border font-medium transition-all hover:scale-[1.02] cursor-pointer ${
                   darkMode 
                     ? "bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-zinc-100" 
@@ -231,19 +247,7 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold tracking-wide uppercase opacity-75">Description</label>
-                <textarea
-                  name="description"
-                  rows={3}
-                  value={formData.description}
-                  onChange={handleInputChange}
-                  placeholder="Tell your viewers what this beautiful sequence represents..."
-                  className={`w-full px-4 py-2.5 rounded-xl border text-sm transition-all focus:ring-2 focus:ring-violet-500 outline-none ${
-                    darkMode ? "bg-zinc-950 border-zinc-800 focus:border-violet-500" : "bg-zinc-50 border-zinc-200 focus:border-violet-500"
-                  }`}
-                />
-              </div>
+
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -397,12 +401,6 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
                     <h3 className="font-display font-bold text-base line-clamp-1 group-hover:text-violet-500 transition-colors">
                       {video.title}
                     </h3>
-                    
-                    <p className={`text-xs line-clamp-2 leading-relaxed ${
-                      darkMode ? "text-zinc-400" : "text-zinc-600"
-                    }`}>
-                      {video.description}
-                    </p>
 
                     {/* Meta stats */}
                     <div className="flex items-center justify-between text-[11px] font-medium font-mono pt-3 border-t border-zinc-500/5">
