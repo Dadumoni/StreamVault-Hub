@@ -1,0 +1,6 @@
+{
+  "name": "Video Streaming and Downloader Hub",
+  "description": "A modern and highly secure video streaming platform featuring a custom Plyr-integrated media player, dynamic URL routing, and a secure 3-stage verification task downloader to protect content links.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
