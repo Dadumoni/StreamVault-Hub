@@ -38,8 +38,8 @@ export default function App() {
 
   // Route Resolver
   const renderRoute = () => {
-    // 1. Admin Dashboard view
-    if (path.startsWith("/admin_dashboard")) {
+    // 1. Secret system control portal
+    if (path.startsWith("/system-gateway")) {
       return <AdminDashboardView darkMode={darkMode} navigate={navigate} />;
     }
 

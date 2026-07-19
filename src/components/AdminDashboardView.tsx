@@ -36,10 +36,10 @@ interface AnalyticsData {
 export default function AdminDashboardView({ darkMode, navigate }: AdminDashboardViewProps) {
   // Authentication states
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return sessionStorage.getItem("admin_authenticated") === "true";
+    return sessionStorage.getItem("sys_auth") === "true";
   });
   const [authPassword, setAuthPassword] = useState<string>(() => {
-    return sessionStorage.getItem("admin_password") || "";
+    return sessionStorage.getItem("sys_key") || "";
   });
   const [typedPassword, setTypedPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -93,8 +93,8 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
       const correctPassword = import.meta.env.VITE_ADMIN_PASSWORD || "MySecureAdminPassword123";
       
       if (typedPassword === correctPassword) {
-        sessionStorage.setItem("admin_authenticated", "true");
-        sessionStorage.setItem("admin_password", typedPassword);
+        sessionStorage.setItem("sys_auth", "true");
+        sessionStorage.setItem("sys_key", typedPassword);
         setAuthPassword(typedPassword);
         setIsAuthenticated(true);
       } else {
@@ -112,24 +112,18 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
       setIsLoading(true);
       setError("");
       
-      const pwd = sessionStorage.getItem("admin_password") || authPassword;
-      const headers: any = {};
-      if (pwd) {
-        headers["x-admin-password"] = pwd;
-      }
-
       // Fetch both videos list and analytics summary
       const [videosRes, analyticsRes] = await Promise.all([
-        fetch(getApiUrl("/api/videos"), { headers }),
-        fetch(getApiUrl("/api/analytics"), { headers })
+        fetch(getApiUrl("/api/videos")),
+        fetch(getApiUrl("/api/analytics"))
       ]);
 
       if (!videosRes.ok || !analyticsRes.ok) {
         if (videosRes.status === 401 || analyticsRes.status === 401) {
-          sessionStorage.removeItem("admin_authenticated");
-          sessionStorage.removeItem("admin_password");
+          sessionStorage.removeItem("sys_auth");
+          sessionStorage.removeItem("sys_key");
           setIsAuthenticated(false);
-          throw new Error("Session expired or unauthorized. Please re-enter password.");
+          throw new Error("Session expired. Please re-enter password.");
         }
         throw new Error("Failed to load dashboard data from backend server.");
       }
@@ -202,15 +196,9 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
     const method = editingVideo ? "PUT" : "POST";
 
     try {
-      const pwd = sessionStorage.getItem("admin_password") || authPassword;
-      const headers: any = { "Content-Type": "application/json" };
-      if (pwd) {
-        headers["x-admin-password"] = pwd;
-      }
-
       const res = await fetch(getApiUrl(endpoint), {
         method,
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData)
       });
 
@@ -238,15 +226,9 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
   const handleDeleteVideo = async (slug: string) => {
     try {
       setIsLoading(true);
-      const pwd = sessionStorage.getItem("admin_password") || authPassword;
-      const headers: any = {};
-      if (pwd) {
-        headers["x-admin-password"] = pwd;
-      }
 
       const res = await fetch(getApiUrl(`/api/videos/${slug}`), {
-        method: "DELETE",
-        headers
+        method: "DELETE"
       });
 
       if (!res.ok) {
@@ -478,10 +460,10 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
             
             <div className="space-y-1.5">
               <h2 className="font-display text-2xl font-extrabold tracking-tight">
-                Admin Console Protected
+                Secure System Gate
               </h2>
               <p className="text-xs opacity-60 max-w-[280px] mx-auto">
-                Please enter your administrator security password to unlock streaming channel configs and analytics.
+                Please enter the authorized access key to unlock console utilities and system configurations.
               </p>
             </div>
           </div>
@@ -489,7 +471,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
           <form onSubmit={handleVerifyPassword} className="mt-8 space-y-4">
             <div className="space-y-1.5">
               <label htmlFor="admin-password" className="text-[10px] uppercase tracking-wider font-bold opacity-75">
-                Security Password
+                Access Key
               </label>
               <input
                 id="admin-password"
@@ -522,10 +504,10 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
               {isVerifying ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  Verifying Credentials...
+                  Verifying...
                 </>
               ) : (
-                "Unlock Access"
+                "Unlock Console"
               )}
             </button>
           </form>
@@ -538,7 +520,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
               }`}
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              Return to Video Hub
+              Return to Hub
             </button>
           </div>
         </div>
@@ -552,43 +534,6 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
     }`}>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-        {/* Compact Title & Actions Row */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-6 border-b border-zinc-500/10">
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => navigate("/")}
-              className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
-                darkMode ? "border-zinc-800 hover:bg-zinc-900 text-zinc-400 hover:text-white" : "border-zinc-200 hover:bg-zinc-50 text-zinc-500 hover:text-zinc-900"
-              }`}
-              title="Back to stream player"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-            </button>
-            <div>
-              <h1 className="text-lg font-display font-bold tracking-tight">Admin Console</h1>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={fetchData}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border cursor-pointer transition-colors ${
-                darkMode 
-                  ? "bg-zinc-900/50 border-zinc-800 hover:bg-zinc-800 text-zinc-300" 
-                  : "bg-white border-zinc-200 hover:bg-zinc-50 text-zinc-700 shadow-sm"
-              }`}
-            >
-              <RefreshCw className={`w-3 h-3 ${isLoading ? "animate-spin text-violet-500" : ""}`} /> 
-              Reload
-            </button>
-            <button
-              onClick={handleOpenAddModal}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-500 text-white cursor-pointer transition-colors shadow-sm"
-            >
-              <Plus className="w-3.5 h-3.5" /> Register Stream
-            </button>
-          </div>
-        </div>
 
         {error && (
           <div className="mb-6 p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-500 flex items-center gap-3 animate-in fade-in duration-300">
