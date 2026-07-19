@@ -3,9 +3,11 @@ export interface Video {
   title: string;
   description: string;
   videoUrl: string;
+  downloadUrl?: string;
   thumbnailUrl: string;
   duration: string;
   views: number;
+  fileSize?: number;
   createdAt: string;
 }
 

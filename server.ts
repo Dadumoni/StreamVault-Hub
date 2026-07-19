@@ -33,6 +33,7 @@ const getAppDirname = (): string => {
 const currentDirname = getAppDirname();
 
 const DB_PATH = path.join(currentDirname, "src", "db", "videos.json");
+const LOGS_PATH = path.join(currentDirname, "src", "db", "view_logs.json");
 
 // Define custom session store
 interface DownloadSession {
@@ -71,6 +72,32 @@ function writeVideos(videos: any[]) {
     fs.writeFileSync(DB_PATH, JSON.stringify(videos, null, 2), "utf-8");
   } catch (error) {
     console.error("Error writing database:", error);
+  }
+}
+
+// Helper to read logs
+function readLogs(): any[] {
+  try {
+    if (fs.existsSync(LOGS_PATH)) {
+      const data = fs.readFileSync(LOGS_PATH, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error("Error reading logs:", error);
+  }
+  return [];
+}
+
+// Helper to write logs
+function writeLogs(logs: any[]) {
+  try {
+    const dir = path.dirname(LOGS_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(LOGS_PATH, JSON.stringify(logs, null, 2), "utf-8");
+  } catch (error) {
+    console.error("Error writing logs:", error);
   }
 }
 
@@ -139,22 +166,166 @@ async function dbFetchVideoBySlug(slug: string): Promise<any | null> {
   return local.find((v) => v.slug === slug) || null;
 }
 
-async function dbIncrementVideoViews(slug: string): Promise<void> {
+function parseUserAgent(ua: string) {
+  let browser = "Other";
+  let device = "Desktop";
+  let os = "Other";
+
+  // Browser detection
+  if (ua.includes("Firefox") && !ua.includes("Seamonkey")) {
+    browser = "Firefox";
+  } else if (ua.includes("Chrome") && !ua.includes("Chromium") && !ua.includes("Edg")) {
+    browser = "Chrome";
+  } else if (ua.includes("Safari") && !ua.includes("Chrome") && !ua.includes("Chromium")) {
+    browser = "Safari";
+  } else if (ua.includes("Edg")) {
+    browser = "Edge";
+  } else if (ua.includes("OPR") || ua.includes("Opera")) {
+    browser = "Opera";
+  }
+
+  // Device detection
+  if (/Mobi|Android|iPhone|iPad|iPod|Windows Phone|IEMobile|BlackBerry|webOS/i.test(ua)) {
+    if (/iPad|tablet/i.test(ua)) {
+      device = "Tablet";
+    } else {
+      device = "Mobile";
+    }
+  } else {
+    device = "Desktop";
+  }
+
+  // OS detection
+  if (ua.includes("Windows NT")) {
+    os = "Windows";
+  } else if (ua.includes("Macintosh") || ua.includes("Mac OS X")) {
+    if (/iPhone|iPad|iPod/.test(ua)) {
+      os = "iOS";
+    } else {
+      os = "macOS";
+    }
+  } else if (ua.includes("Android")) {
+    os = "Android";
+  } else if (ua.includes("Linux")) {
+    os = "Linux";
+  }
+
+  return { browser, device, os };
+}
+
+async function dbLogView(slug: string, ip: string, userAgent: string): Promise<boolean> {
+  const { browser, device, os } = parseUserAgent(userAgent);
+  const timestamp = new Date();
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
   const db = await getMongoDb();
   if (db && isMongoActive) {
     try {
+      const col = db.collection("view_logs");
+      // Check if this IP viewed this video in the last 24 hours
+      const existing = await col.findOne({
+        slug,
+        ip,
+        timestamp: { $gte: twentyFourHoursAgo }
+      });
+
+      if (existing) {
+        return false;
+      }
+
+      // Record log
+      await col.insertOne({
+        slug,
+        ip,
+        userAgent,
+        browser,
+        device,
+        os,
+        timestamp
+      });
+
+      // Increment video views in videos collection
       await db.collection("videos").updateOne({ slug }, { $inc: { views: 1 } });
-      return;
+      return true;
     } catch (err) {
-      console.error("Failed to increment views on MongoDB:", err);
+      console.error("Failed to log view in MongoDB:", err);
+    }
+  }
+
+  // Fallback to local files
+  const logs = readLogs();
+  const existingLocal = logs.find(
+    (l) => l.slug === slug && l.ip === ip && new Date(l.timestamp) >= twentyFourHoursAgo
+  );
+
+  if (existingLocal) {
+    return false;
+  }
+
+  // Add local log
+  logs.push({
+    slug,
+    ip,
+    userAgent,
+    browser,
+    device,
+    os,
+    timestamp: timestamp.toISOString()
+  });
+  writeLogs(logs);
+
+  // Increment local video views
+  const localVideos = readVideos();
+  const video = localVideos.find((v) => v.slug === slug);
+  if (video) {
+    video.views = (video.views || 0) + 1;
+    writeVideos(localVideos);
+  }
+  return true;
+}
+
+async function dbDeleteVideo(slug: string): Promise<boolean> {
+  const db = await getMongoDb();
+  if (db && isMongoActive) {
+    try {
+      const col = db.collection("videos");
+      const result = await col.deleteOne({ slug });
+      // Also delete view logs for this video
+      await db.collection("view_logs").deleteMany({ slug });
+      return (result.deletedCount || 0) > 0;
+    } catch (err) {
+      console.error("Failed to delete video on MongoDB:", err);
     }
   }
   const local = readVideos();
-  const video = local.find((v) => v.slug === slug);
-  if (video) {
-    video.views = (video.views || 0) + 1;
-    writeVideos(local);
+  const filtered = local.filter((v) => v.slug !== slug);
+  if (local.length === filtered.length) return false;
+  writeVideos(filtered);
+  
+  // Also delete local view logs
+  const localLogs = readLogs();
+  const filteredLogs = localLogs.filter((l) => l.slug !== slug);
+  writeLogs(filteredLogs);
+  return true;
+}
+
+async function dbUpdateVideo(slug: string, updatedFields: any): Promise<boolean> {
+  const db = await getMongoDb();
+  if (db && isMongoActive) {
+    try {
+      const col = db.collection("videos");
+      const result = await col.updateOne({ slug }, { $set: updatedFields });
+      return (result.matchedCount || 0) > 0;
+    } catch (err) {
+      console.error("Failed to update video on MongoDB:", err);
+    }
   }
+  const local = readVideos();
+  const idx = local.findIndex((v) => v.slug === slug);
+  if (idx === -1) return false;
+  local[idx] = { ...local[idx], ...updatedFields };
+  writeVideos(local);
+  return true;
 }
 
 async function dbInsertVideo(newVideo: any): Promise<boolean> {
@@ -233,14 +404,18 @@ async function startServer() {
   app.get("/api/videos/:slug", async (req, res) => {
     try {
       const { slug } = req.params;
+      
+      const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1").toString().split(",")[0].trim();
+      const userAgent = req.headers["user-agent"] || "";
+
+      // Log view and increment if unique in last 24h
+      await dbLogView(slug, ip, userAgent);
+
       const video = await dbFetchVideoBySlug(slug);
 
       if (!video) {
         return res.status(404).json({ error: "Video not found" });
       }
-
-      // Increment views safely on the active database
-      await dbIncrementVideoViews(slug);
 
       // Omit downloadUrl from details response to prevent scraping
       const { downloadUrl, ...publicDetails } = video;
@@ -253,7 +428,7 @@ async function startServer() {
   // Create a new video entry (Admin panel feature)
   app.post("/api/videos", async (req, res) => {
     try {
-      const { title, description, videoUrl, downloadUrl, thumbnailUrl, duration, slug } = req.body;
+      const { title, description, videoUrl, downloadUrl, thumbnailUrl, duration, slug, fileSize } = req.body;
 
       if (!title || !videoUrl || !downloadUrl) {
         return res.status(400).json({ error: "Title, Video URL, and Download URL are required" });
@@ -269,6 +444,7 @@ async function startServer() {
         downloadUrl,
         thumbnailUrl: thumbnailUrl || "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=60",
         duration: duration || "00:00",
+        fileSize: fileSize ? parseFloat(fileSize) : 124.5, // Default size in MB
         views: 0,
         createdAt: new Date().toISOString().split("T")[0],
       };
@@ -281,6 +457,175 @@ async function startServer() {
       res.status(201).json(newVideo);
     } catch (err) {
       res.status(500).json({ error: "Failed to publish streaming channel" });
+    }
+  });
+
+  // Update a video entry
+  app.put("/api/videos/:slug", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const { title, description, videoUrl, downloadUrl, thumbnailUrl, duration, fileSize } = req.body;
+
+      const fieldsToUpdate: any = {};
+      if (title !== undefined) fieldsToUpdate.title = title;
+      if (description !== undefined) fieldsToUpdate.description = description;
+      if (videoUrl !== undefined) fieldsToUpdate.videoUrl = videoUrl;
+      if (downloadUrl !== undefined) fieldsToUpdate.downloadUrl = downloadUrl;
+      if (thumbnailUrl !== undefined) fieldsToUpdate.thumbnailUrl = thumbnailUrl;
+      if (duration !== undefined) fieldsToUpdate.duration = duration;
+      if (fileSize !== undefined) fieldsToUpdate.fileSize = parseFloat(fileSize) || 124.5;
+
+      const success = await dbUpdateVideo(slug, fieldsToUpdate);
+      if (!success) {
+        return res.status(404).json({ error: "Video not found or no changes made." });
+      }
+
+      res.json({ success: true, message: "Video updated successfully." });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update video" });
+    }
+  });
+
+  // Delete a video entry
+  app.delete("/api/videos/:slug", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const success = await dbDeleteVideo(slug);
+      if (!success) {
+        return res.status(404).json({ error: "Video not found." });
+      }
+      res.json({ success: true, message: "Video deleted successfully." });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete video" });
+    }
+  });
+
+  // Analytics endpoint
+  app.get("/api/analytics", async (req, res) => {
+    try {
+      const videos = await dbFetchVideos();
+      
+      let logs: any[] = [];
+      const db = await getMongoDb();
+      if (db && isMongoActive) {
+        try {
+          logs = await db.collection("view_logs").find({}).toArray();
+        } catch (err) {
+          console.error("Failed to fetch logs from MongoDB:", err);
+          logs = readLogs();
+        }
+      } else {
+        logs = readLogs();
+      }
+
+      const totalFiles = videos.length;
+      const totalViews = logs.length;
+
+      const totalStorageMB = videos.reduce((acc, v) => acc + (v.fileSize || 124.5), 0);
+      const totalStorage = totalStorageMB >= 1024 
+        ? `${(totalStorageMB / 1024).toFixed(2)} GB`
+        : `${totalStorageMB.toFixed(1)} MB`;
+
+      const dailyViewsMap: { [key: string]: number } = {};
+      const today = new Date();
+      for (let i = 14; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        const dateStr = d.toISOString().split("T")[0];
+        dailyViewsMap[dateStr] = 0;
+      }
+
+      logs.forEach(log => {
+        try {
+          const logDate = new Date(log.timestamp).toISOString().split("T")[0];
+          if (dailyViewsMap[logDate] !== undefined) {
+            dailyViewsMap[logDate]++;
+          }
+        } catch (e) {}
+      });
+
+      const dailyViews = Object.keys(dailyViewsMap).sort().map(date => ({
+        date,
+        views: dailyViewsMap[date]
+      }));
+
+      const deviceStatsMap: { [key: string]: number } = { Desktop: 0, Mobile: 0, Tablet: 0 };
+      logs.forEach(log => {
+        const device = log.device || "Desktop";
+        if (deviceStatsMap[device] !== undefined) {
+          deviceStatsMap[device]++;
+        } else {
+          deviceStatsMap[device] = (deviceStatsMap[device] || 0) + 1;
+        }
+      });
+      const deviceStats = Object.keys(deviceStatsMap).map(key => ({
+        name: key,
+        value: deviceStatsMap[key]
+      }));
+
+      const browserStatsMap: { [key: string]: number } = {};
+      logs.forEach(log => {
+        const browser = log.browser || "Other";
+        browserStatsMap[browser] = (browserStatsMap[browser] || 0) + 1;
+      });
+      const browserStats = Object.keys(browserStatsMap).map(key => ({
+        name: key,
+        value: browserStatsMap[key]
+      }));
+
+      const osStatsMap: { [key: string]: number } = {};
+      logs.forEach(log => {
+        const os = log.os || "Other";
+        osStatsMap[os] = (osStatsMap[os] || 0) + 1;
+      });
+      const osStats = Object.keys(osStatsMap).map(key => ({
+        name: key,
+        value: osStatsMap[key]
+      }));
+
+      const topVideos = [...videos]
+        .sort((a, b) => (b.views || 0) - (a.views || 0))
+        .slice(0, 5)
+        .map(v => ({
+          title: v.title,
+          slug: v.slug,
+          views: v.views || 0,
+          fileSize: v.fileSize || 124.5
+        }));
+
+      const videoTitleMap = videos.reduce((acc, v) => {
+        acc[v.slug] = v.title;
+        return acc;
+      }, {} as { [key: string]: string });
+
+      const sortedLogs = [...logs]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 50);
+
+      const recentLogs = sortedLogs.map(log => ({
+        title: videoTitleMap[log.slug] || log.slug,
+        slug: log.slug,
+        ip: log.ip || "Unknown",
+        browser: log.browser || "Other",
+        device: log.device || "Desktop",
+        os: log.os || "Other",
+        timestamp: log.timestamp
+      }));
+
+      res.json({
+        totalFiles,
+        totalViews,
+        totalStorage,
+        dailyViews,
+        deviceStats,
+        browserStats,
+        osStats,
+        topVideos,
+        recentLogs
+      });
+    } catch (err) {
+      console.error("Analytics endpoint error:", err);
+      res.status(500).json({ error: "Failed to load analytics details" });
     }
   });
 

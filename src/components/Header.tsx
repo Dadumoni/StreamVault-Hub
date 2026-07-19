@@ -29,23 +29,26 @@ export default function Header({ darkMode, setDarkMode, navigate }: HeaderProps)
           </span>
         </div>
 
-        {/* Right Side: Day / Night toggle button */}
-        <button
-          onClick={() => setDarkMode(!darkMode)}
-          className={`p-2.5 rounded-xl border transition-all duration-300 ${
-            darkMode 
-              ? "bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-amber-400 hover:text-amber-300 shadow-[0_0_15px_rgba(251,191,36,0.1)]" 
-              : "bg-zinc-50 border-zinc-200 hover:bg-zinc-100 text-indigo-600 hover:text-indigo-700 shadow-sm"
-          }`}
-          aria-label="Toggle Night Mode"
-          id="night-mode-toggle"
-        >
-          {darkMode ? (
-            <Sun className="w-5 h-5 animate-pulse" />
-          ) : (
-            <Moon className="w-5 h-5" />
-          )}
-        </button>
+        {/* Right Side Actions */}
+        <div className="flex items-center gap-3">
+          {/* Day / Night toggle button */}
+          <button
+            onClick={() => setDarkMode(!darkMode)}
+            className={`p-2 rounded-xl border transition-all duration-300 cursor-pointer ${
+              darkMode 
+                ? "bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-amber-400 hover:text-amber-300 shadow-[0_0_15px_rgba(251,191,36,0.1)]" 
+                : "bg-zinc-50 border-zinc-200 hover:bg-zinc-100 text-indigo-600 hover:text-indigo-700 shadow-sm"
+            }`}
+            aria-label="Toggle Night Mode"
+            id="night-mode-toggle"
+          >
+            {darkMode ? (
+              <Sun className="w-4 h-4 animate-pulse" />
+            ) : (
+              <Moon className="w-4 h-4" />
+            )}
+          </button>
+        </div>
       </div>
     </header>
   );

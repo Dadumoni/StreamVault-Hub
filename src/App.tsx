@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import Header from "./components/Header";
 import PlayerView from "./components/PlayerView";
 import DownloadView from "./components/DownloadView";
+import AdminDashboardView from "./components/AdminDashboardView";
+import HomeView from "./components/HomeView";
 
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
@@ -36,13 +38,23 @@ export default function App() {
 
   // Route Resolver
   const renderRoute = () => {
-    // 1. Secure Downloader view (format: /download/:slug)
+    // 1. Admin Dashboard view
+    if (path.startsWith("/admin_dashboard")) {
+      return <AdminDashboardView darkMode={darkMode} navigate={navigate} />;
+    }
+
+    // 2. Home dashboard view
+    if (path.startsWith("/home")) {
+      return <HomeView darkMode={darkMode} navigate={navigate} />;
+    }
+
+    // 3. Secure Downloader view (format: /download/:slug)
     if (path.startsWith("/download/")) {
       const slug = path.split("/")[2] || "";
       return <DownloadView slug={slug} darkMode={darkMode} navigate={navigate} />;
     }
 
-    // 2. Immersive Streaming view (format: /:slug)
+    // 4. Immersive Streaming view (format: /:slug)
     // Strip leading slash
     const slug = path.substring(1);
     if (slug && slug !== "home" && slug !== "index.html" && slug !== "player" && slug !== "player/") {
