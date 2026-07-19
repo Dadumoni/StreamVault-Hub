@@ -5,6 +5,7 @@ import {
   ArrowLeft, Download, Share2, Eye, Calendar, Clock, 
   Copy, Check, Facebook, Twitter, Mail, HelpCircle, Film, Sparkles, ExternalLink
 } from "lucide-react";
+import { getApiUrl } from "../utils/api";
 
 interface PlayerViewProps {
   slug: string;
@@ -27,7 +28,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const res = await fetch("/api/config");
+        const res = await fetch(getApiUrl("/api/config"));
         if (res.ok) {
           const data = await res.json();
           if (data.channelLink) {
@@ -51,7 +52,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
       try {
         setIsLoading(true);
         setError("");
-        const res = await fetch(`/api/videos/${slug}`);
+        const res = await fetch(getApiUrl(`/api/videos/${slug}`));
         if (!res.ok) {
           throw new Error("This streaming channel is inactive or could not be found.");
         }

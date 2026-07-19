@@ -4,6 +4,7 @@ import {
   ArrowLeft, Lock, Unlock, CheckCircle2, ShieldCheck, 
   Clock, AlertTriangle, ExternalLink, RefreshCw, FileVideo, ShieldAlert 
 } from "lucide-react";
+import { getApiUrl } from "../utils/api";
 
 interface DownloadViewProps {
   slug: string;
@@ -39,19 +40,19 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
         setError("");
 
         // 1. Fetch video metadata
-        const videoRes = await fetch(`/api/videos/${slug}`);
+        const videoRes = await fetch(getApiUrl(`/api/videos/${slug}`));
         if (!videoRes.ok) throw new Error("Video channel is offline or unavailable.");
         const videoData = await videoRes.json();
         setVideo(videoData);
 
         // 2. Fetch task config (ENV URLs)
-        const configRes = await fetch("/api/config");
+        const configRes = await fetch(getApiUrl("/api/config"));
         if (!configRes.ok) throw new Error("Downloader service is temporarily offline.");
         const configData = await configRes.json();
         setTaskConfig(configData);
 
         // 3. Register secure session on backend
-        const sessionRes = await fetch("/api/session/start", {
+        const sessionRes = await fetch(getApiUrl("/api/session/start"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ slug }),
@@ -97,7 +98,7 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
 
     try {
       // 1. Inform server that task timer started
-      const res = await fetch("/api/session/task/start", {
+      const res = await fetch(getApiUrl("/api/session/task/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, task: taskNumber }),
@@ -128,7 +129,7 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
 
     try {
       // Send verification request to server
-      const res = await fetch("/api/session/task/complete", {
+      const res = await fetch(getApiUrl("/api/session/task/complete"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, task: taskNumber }),
@@ -166,7 +167,7 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
     setIsVerifying(true);
 
     try {
-      const res = await fetch("/api/session/download", {
+      const res = await fetch(getApiUrl("/api/session/download"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId }),

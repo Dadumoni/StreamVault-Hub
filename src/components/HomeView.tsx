@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Video } from "../types";
 import { Play, Flame, Film, PlusCircle, ArrowRight, Eye, Calendar, Clock, AlertCircle, CheckCircle2 } from "lucide-react";
+import { getApiUrl } from "../utils/api";
 
 interface HomeViewProps {
   darkMode: boolean;
@@ -33,7 +34,7 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
   const fetchVideos = async () => {
     try {
       setIsLoading(true);
-      const res = await fetch("/api/videos");
+      const res = await fetch(getApiUrl("/api/videos"));
       if (res.ok) {
         const data = await res.json();
         setVideos(data);
@@ -72,7 +73,7 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
 
     try {
       setIsSubmitting(true);
-      const res = await fetch("/api/videos", {
+      const res = await fetch(getApiUrl("/api/videos"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
