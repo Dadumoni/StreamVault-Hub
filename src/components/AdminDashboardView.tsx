@@ -32,6 +32,10 @@ interface AnalyticsData {
     os: string;
     timestamp: string;
   }[];
+  mongoStorageSize?: string;
+  mongoCollections?: number;
+  mongoDocuments?: number;
+  isMongoActive?: boolean;
 }
 
 export default function AdminDashboardView({ darkMode, navigate }: AdminDashboardViewProps) {
@@ -251,6 +255,18 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
     v.slug.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (v.description && v.description.toLowerCase().includes(searchQuery.toLowerCase()))
   );
+
+  // Pagination for Files
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 25;
+
+  const totalItems = filteredVideos.length;
+  const isLimitReached = totalItems <= itemsPerPage;
+  const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
+  const activePage = Math.min(currentPage, totalPages);
+  const indexOfLastItem = activePage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentFilteredVideos = filteredVideos.slice(indexOfFirstItem, indexOfLastItem);
 
   // SVG Area Chart calculations
   const renderSvgChart = () => {
@@ -628,19 +644,37 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                     <p className={`text-[10px] mt-1 font-mono ${darkMode ? "text-zinc-500" : "text-zinc-500"}`}>Compiled sizes estimate</p>
                   </div>
 
-                  {/* Card 4: Server Status */}
+                  {/* Card 4: Database Status */}
                   <div className={`p-6 rounded-2xl border ${darkMode ? "bg-zinc-900/30 border-zinc-900" : "bg-white border-zinc-200/80 shadow-sm"} relative overflow-hidden group`}>
                     <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl"></div>
                     <div className="flex items-center justify-between mb-3">
-                      <span className="text-[10px] uppercase tracking-wider font-bold opacity-60">Cluster Connection</span>
-                      <span className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400">
+                      <span className="text-[10px] uppercase tracking-wider font-bold opacity-60">Database Cluster</span>
+                      <span className={`p-2 rounded-xl ${analytics?.isMongoActive ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"}`}>
                         <Activity className="w-4 h-4" />
                       </span>
                     </div>
-                    <div className="text-lg font-display font-bold tracking-tight text-emerald-500 truncate">
-                      {analytics?.recentLogs ? "MongoDB Online" : "Local Falling Back"}
-                    </div>
-                    <p className={`text-[10px] mt-2 font-mono ${darkMode ? "text-zinc-500" : "text-zinc-500"}`}>24h telemetry active</p>
+                    {analytics?.isMongoActive ? (
+                      <div className="space-y-1">
+                        <div className="text-xl font-display font-black tracking-tight text-emerald-500">
+                          {analytics.mongoStorageSize || "0.00 KB"}
+                        </div>
+                        <div className={`text-[10px] font-mono ${darkMode ? "text-zinc-400" : "text-zinc-500"}`}>
+                          {analytics.mongoCollections ?? 0} collections ({analytics.mongoDocuments ?? 0} docs)
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <div className="text-lg font-display font-bold tracking-tight text-amber-500">
+                          JSON Database
+                        </div>
+                        <div className={`text-[10px] font-mono ${darkMode ? "text-zinc-400" : "text-zinc-500"}`}>
+                          MongoDB is Offline (Local file)
+                        </div>
+                      </div>
+                    )}
+                    <p className={`text-[10px] mt-2 font-mono ${darkMode ? "text-zinc-500" : "text-zinc-500"}`}>
+                      {analytics?.isMongoActive ? "MongoDB Telemetry Active" : "Using local JSON fallback"}
+                    </p>
                   </div>
                 </div>
 
@@ -800,7 +834,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
               <div className={`p-6 rounded-2xl border ${darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-200 shadow-sm"} space-y-6 animate-in fade-in duration-300`}>
                 
                 {/* Search Bar & Stats Header */}
-                <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+                <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
                   <div>
                     <h3 className="text-base font-display font-bold">R2 Storage Stream Files</h3>
                     <p className={`text-xs ${darkMode ? "text-zinc-400" : "text-zinc-500"}`}>
@@ -808,20 +842,26 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                     </p>
                   </div>
                   
-                  {/* Search Input Box */}
-                  <div className="relative w-full sm:w-72">
-                    <Search className="w-4 h-4 absolute left-3 top-3 opacity-40" />
-                    <input
-                      type="text"
-                      placeholder="Search index by slug, title..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className={`w-full pl-9 pr-4 py-2 text-xs rounded-xl border outline-none transition-all focus:ring-2 focus:ring-violet-500 ${
-                        darkMode 
-                          ? "bg-zinc-950 border-zinc-800 focus:border-violet-500 text-zinc-100" 
-                          : "bg-zinc-50 border-zinc-200 focus:border-violet-500 text-zinc-800"
-                      }`}
-                    />
+                  {/* Search Control */}
+                  <div className="flex items-center gap-3 w-full md:w-auto shrink-0">
+                    {/* Search Input Box */}
+                    <div className="relative w-full sm:w-60 shrink-0">
+                      <Search className="w-4 h-4 absolute left-3 top-2.5 opacity-40" />
+                      <input
+                        type="text"
+                        placeholder="Search index by slug, title..."
+                        value={searchQuery}
+                        onChange={(e) => {
+                          setSearchQuery(e.target.value);
+                          setCurrentPage(1);
+                        }}
+                        className={`w-full pl-9 pr-4 py-2 text-xs rounded-xl border outline-none transition-all focus:ring-2 focus:ring-violet-500 ${
+                          darkMode 
+                            ? "bg-zinc-950 border-zinc-800 focus:border-violet-500 text-zinc-100" 
+                            : "bg-zinc-50 border-zinc-200 focus:border-violet-500 text-zinc-800"
+                        }`}
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -840,8 +880,8 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-500/5">
-                      {filteredVideos.length > 0 ? (
-                        filteredVideos.map((video) => (
+                      {currentFilteredVideos.length > 0 ? (
+                        currentFilteredVideos.map((video) => (
                           <tr key={video.slug} className="hover:bg-zinc-500/5 transition-colors">
                             {/* Thumbnail */}
                             <td className="py-3.5 pr-4 shrink-0">
@@ -904,6 +944,17 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                                   >
                                     <Edit2 className="w-3.5 h-3.5" />
                                   </button>
+                                  <a
+                                    href={`/${video.slug}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={`p-1.5 rounded-lg border cursor-pointer transition-colors flex items-center justify-center ${
+                                      darkMode ? "border-zinc-800 hover:bg-zinc-800 text-zinc-300" : "border-zinc-200 hover:bg-zinc-100 text-zinc-700"
+                                    }`}
+                                    title="Play stream (New tab)"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </a>
                                   <button
                                     onClick={() => setDeleteConfirmSlug(video.slug)}
                                     className={`p-1.5 rounded-lg border cursor-pointer transition-colors ${
@@ -928,6 +979,76 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                     </tbody>
                   </table>
                 </div>
+
+                {/* Pagination Controls */}
+                {filteredVideos.length > 0 && (
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-zinc-500/5">
+                    <div className="text-xs opacity-60 font-medium">
+                      {isLimitReached ? (
+                        <span>Showing all {totalItems} items</span>
+                      ) : (
+                        <span>
+                          Showing {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, totalItems)} of {totalItems} items
+                        </span>
+                      )}
+                    </div>
+                    
+                    <div className="flex items-center gap-1.5">
+                      {/* Prev Button */}
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                        disabled={currentPage === 1 || isLimitReached}
+                        className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 select-none ${
+                          currentPage === 1 || isLimitReached
+                            ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
+                            : darkMode
+                              ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
+                              : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 shadow-sm cursor-pointer"
+                        }`}
+                      >
+                        Previous
+                      </button>
+
+                      {/* Page numbers */}
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+                        <button
+                          key={pageNum}
+                          type="button"
+                          onClick={() => setCurrentPage(pageNum)}
+                          disabled={isLimitReached}
+                          className={`w-8 h-8 rounded-lg border text-xs font-mono font-bold transition-all select-none ${
+                            isLimitReached
+                              ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
+                              : activePage === pageNum
+                                ? "bg-violet-600 border-violet-600 text-white shadow-sm"
+                                : darkMode
+                                  ? "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+                                  : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50 cursor-pointer"
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      ))}
+
+                      {/* Next Button */}
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                        disabled={currentPage === totalPages || isLimitReached}
+                        className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 select-none ${
+                          currentPage === totalPages || isLimitReached
+                            ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
+                            : darkMode
+                              ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
+                              : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 shadow-sm cursor-pointer"
+                        }`}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
 
               </div>
             )}

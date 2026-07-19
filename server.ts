@@ -116,6 +116,57 @@ let mongoClient: MongoClient | null = null;
 let dbInstance: any = null;
 let isMongoActive = false;
 
+async function ensureMongoSchemaAndColumns(db: any) {
+  try {
+    console.log("Checking MongoDB collections and schema integrity...");
+    // 1. Ensure Collections ("tables") exist
+    const collections = await db.listCollections().toArray();
+    const collectionNames = collections.map((c: any) => c.name);
+
+    if (!collectionNames.includes("videos")) {
+      console.log("Creating missing collection: 'videos'...");
+      await db.createCollection("videos");
+    }
+
+    if (!collectionNames.includes("view_logs")) {
+      console.log("Creating missing collection: 'view_logs'...");
+      await db.createCollection("view_logs");
+    }
+
+    // 2. Ensure "Columns" (fields) exist in 'videos' collection
+    const col = db.collection("videos");
+
+    // Check if there are any documents to seed first if it's empty
+    const count = await col.countDocuments();
+    if (count === 0) {
+      const local = readVideos();
+      if (local.length > 0) {
+        console.log("Seeding MongoDB collection 'videos' with initial items...");
+        await col.insertMany(local);
+      }
+    }
+
+    // Auto-migrate: If any existing document is missing standard fields (columns), update them automatically!
+    const defaultThumbnail = "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=60";
+    const defaultDate = new Date().toISOString().split("T")[0];
+
+    await col.updateMany({ title: { $exists: false } }, { $set: { title: "Untitled Stream" } });
+    await col.updateMany({ description: { $exists: false } }, { $set: { description: "" } });
+    await col.updateMany({ videoUrl: { $exists: false } }, { $set: { videoUrl: "" } });
+    await col.updateMany({ downloadUrl: { $exists: false } }, { $set: { downloadUrl: "" } });
+    await col.updateMany({ thumbnailUrl: { $exists: false } }, { $set: { thumbnailUrl: defaultThumbnail } });
+    await col.updateMany({ duration: { $exists: false } }, { $set: { duration: "00:00" } });
+    await col.updateMany({ fileSize: { $exists: false } }, { $set: { fileSize: 124.5 } });
+    await col.updateMany({ views: { $exists: false } }, { $set: { views: 0 } });
+    await col.updateMany({ downloads: { $exists: false } }, { $set: { downloads: 0 } });
+    await col.updateMany({ createdAt: { $exists: false } }, { $set: { createdAt: defaultDate } });
+
+    console.log("MongoDB collections and columns verified successfully!");
+  } catch (err) {
+    console.error("Error ensuring MongoDB collections and columns schema:", err);
+  }
+}
+
 async function getMongoDb() {
   if (!process.env.MONGODB_URI) {
     isMongoActive = false;
@@ -131,6 +182,10 @@ async function getMongoDb() {
     dbInstance = mongoClient.db();
     isMongoActive = true;
     console.log("MongoDB connection successfully established!");
+    
+    // Automatically ensure collections and columns exist
+    await ensureMongoSchemaAndColumns(dbInstance);
+
     return dbInstance;
   } catch (err) {
     console.error("MongoDB connection failed, using local JSON database fallback:", err);
@@ -516,12 +571,31 @@ async function startServer() {
       const videos = await dbFetchVideos();
       
       let logs: any[] = [];
+      let mongoStorageSize = "0.00 KB";
+      let mongoCollections = 0;
+      let mongoDocuments = 0;
+
       const db = await getMongoDb();
       if (db && isMongoActive) {
         try {
           logs = await db.collection("view_logs").find({}).toArray();
+          
+          // Fetch MongoDB Stats
+          const stats = await db.command({ dbStats: 1 });
+          if (stats) {
+            mongoCollections = stats.collections || 0;
+            mongoDocuments = stats.objects || 0;
+            const bytes = stats.storageSize || stats.dataSize || 0;
+            if (bytes >= 1024 * 1024 * 1024) {
+              mongoStorageSize = `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+            } else if (bytes >= 1024 * 1024) {
+              mongoStorageSize = `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+            } else {
+              mongoStorageSize = `${(bytes / 1024).toFixed(2)} KB`;
+            }
+          }
         } catch (err) {
-          console.error("Failed to fetch logs from MongoDB:", err);
+          console.error("Failed to fetch logs or stats from MongoDB:", err);
           logs = readLogs();
         }
       } else {
@@ -631,7 +705,11 @@ async function startServer() {
         browserStats,
         osStats,
         topVideos,
-        recentLogs
+        recentLogs,
+        mongoStorageSize,
+        mongoCollections,
+        mongoDocuments,
+        isMongoActive
       });
     } catch (err) {
       console.error("Analytics endpoint error:", err);

@@ -37,6 +37,18 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
   const [formSuccess, setFormSuccess] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Pagination States
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 25;
+
+  const totalItems = videos.length;
+  const isLimitReached = totalItems <= itemsPerPage;
+  const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
+  const activePage = Math.min(currentPage, totalPages);
+  const indexOfLastItem = activePage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentVideos = videos.slice(indexOfFirstItem, indexOfLastItem);
+
   useEffect(() => {
     fetchVideos();
   }, []);
@@ -338,9 +350,11 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
 
         {/* Video Grid Section */}
         <div className="space-y-6">
-          <div className="flex items-center gap-2 pb-2 border-b border-zinc-500/10">
-            <Film className="w-5 h-5 text-violet-500" />
-            <h2 className="text-2xl font-display font-extrabold tracking-tight">Active Stream Channels</h2>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-zinc-500/10">
+            <div className="flex items-center gap-2">
+              <Film className="w-5 h-5 text-violet-500" />
+              <h2 className="text-2xl font-display font-extrabold tracking-tight">Active Stream Channels</h2>
+            </div>
           </div>
 
           {isLoading ? (
@@ -360,7 +374,7 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {videos.map((video) => (
+              {currentVideos.map((video) => (
                 <div
                   key={video.slug}
                   onClick={() => navigate(`/${video.slug}`)}
@@ -416,6 +430,73 @@ export default function HomeView({ darkMode, navigate }: HomeViewProps) {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Pagination Controls */}
+          {videos.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 mt-4 border-t border-zinc-500/10">
+              <div className="text-xs opacity-60 font-medium">
+                {isLimitReached ? (
+                  <span>Showing all {totalItems} items</span>
+                ) : (
+                  <span>
+                    Showing {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, totalItems)} of {totalItems} items
+                  </span>
+                )}
+              </div>
+              
+              <div className="flex items-center gap-1.5">
+                {/* Prev Button */}
+                <button
+                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                  disabled={currentPage === 1 || isLimitReached}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 select-none ${
+                    currentPage === 1 || isLimitReached
+                      ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
+                      : darkMode
+                        ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
+                        : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 shadow-sm cursor-pointer"
+                  }`}
+                >
+                  Previous
+                </button>
+
+                {/* Page numbers */}
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
+                  <button
+                    key={pageNum}
+                    onClick={() => setCurrentPage(pageNum)}
+                    disabled={isLimitReached}
+                    className={`w-8 h-8 rounded-lg border text-xs font-mono font-bold transition-all select-none ${
+                      isLimitReached
+                        ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
+                        : activePage === pageNum
+                          ? "bg-violet-600 border-violet-600 text-white shadow-sm"
+                          : darkMode
+                            ? "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+                            : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50 cursor-pointer"
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                ))}
+
+                {/* Next Button */}
+                <button
+                  onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage === totalPages || isLimitReached}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 select-none ${
+                    currentPage === totalPages || isLimitReached
+                      ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
+                      : darkMode
+                        ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
+                        : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 shadow-sm cursor-pointer"
+                  }`}
+                >
+                  Next
+                </button>
+              </div>
             </div>
           )}
         </div>
