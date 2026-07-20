@@ -9,6 +9,8 @@ export interface Video {
   views: number;
   fileSize?: number;
   createdAt: string;
+  mp4_urls?: Record<string, string>;
+  hls_playlist_url?: string;
 }
 
 export interface TaskConfig {

@@ -5,7 +5,7 @@ import Hls from "hls.js";
 import "plyr/dist/plyr.css";
 import { 
   ArrowLeft, Download, Share2, Eye, Calendar, Clock, 
-  Copy, Check, Facebook, Twitter, Mail, HelpCircle, Film, Sparkles, ExternalLink
+  Copy, Check, Facebook, Twitter, Mail, HelpCircle, Film, Sparkles, ExternalLink, Database
 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
 
@@ -22,10 +22,27 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
   const [showShareModal, setShowShareModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const [channelLink, setChannelLink] = useState("");
+  const [playbackMode, setPlaybackMode] = useState<"hls" | "mp4">("hls");
+  const [selectedMp4Quality, setSelectedMp4Quality] = useState<string>("");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const plyrInstance = useRef<Plyr | null>(null);
   const hlsInstance = useRef<Hls | null>(null);
+
+  // Compute active video source URL
+  let activeSource = "";
+  if (video) {
+    const hasHls = (video.hls_playlist_url || video.videoUrl || "").toLowerCase().includes(".m3u8");
+    if (playbackMode === "hls" && hasHls) {
+      activeSource = video.hls_playlist_url || video.videoUrl;
+    } else if (video.mp4_urls && Object.keys(video.mp4_urls).length > 0) {
+      const qualities = Object.keys(video.mp4_urls);
+      const quality = selectedMp4Quality || qualities[0];
+      activeSource = video.mp4_urls[quality];
+    } else {
+      activeSource = video.videoUrl;
+    }
+  }
 
   // Fetch application configuration (including channelLink) on mount
   useEffect(() => {
@@ -61,6 +78,18 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         }
         const data = await res.json();
         setVideo(data);
+        
+        // Auto-configure default playback mode and quality
+        const hasHls = (data.hls_playlist_url || data.videoUrl || "").toLowerCase().includes(".m3u8");
+        if (hasHls) {
+          setPlaybackMode("hls");
+        } else {
+          setPlaybackMode("mp4");
+        }
+        if (data.mp4_urls && Object.keys(data.mp4_urls).length > 0) {
+          const qualities = Object.keys(data.mp4_urls);
+          setSelectedMp4Quality(qualities[0]);
+        }
       } catch (err: any) {
         setError(err.message || "Failed to load video details.");
       } finally {
@@ -73,13 +102,12 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
 
   // Initialize Plyr and HLS
   useEffect(() => {
-    if (!video || !videoRef.current) return;
+    if (!video || !videoRef.current || !activeSource) return;
 
     const videoElement = videoRef.current;
-    const source = video.videoUrl;
-    const isHls = source.toLowerCase().includes(".m3u8");
+    const isHls = activeSource.toLowerCase().includes(".m3u8");
 
-    // Clean up previous instances
+    // Clean up previous instances completely
     if (plyrInstance.current) {
       plyrInstance.current.destroy();
       plyrInstance.current = null;
@@ -89,8 +117,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
       hlsInstance.current = null;
     }
 
-    // Initialize Plyr first
-    const player = new Plyr(videoElement, {
+    const plyrOptions = {
       controls: [
         "play-large",
         "play",
@@ -108,22 +135,58 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
       tooltips: { controls: true, seek: true },
       keyboard: { global: true },
       ratio: "16:9",
-    });
-    plyrInstance.current = player;
+      autoplay: false,
+    };
+
+    let hls: Hls | null = null;
+    let plyr: Plyr | null = null;
 
     if (isHls) {
       if (Hls.isSupported()) {
-        const hls = new Hls();
-        hls.loadSource(source);
+        hls = new Hls({
+          maxMaxBufferLength: 10, // Optimize buffering for smooth playback
+          enableWorker: true,
+          lowLatencyMode: true,
+        });
+        hls.loadSource(activeSource);
         hls.attachMedia(videoElement);
         hlsInstance.current = hls;
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          plyr = new Plyr(videoElement, plyrOptions);
+          plyrInstance.current = plyr;
+        });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                console.log("fatal network error encountered, try to recover");
+                hls?.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                console.log("fatal media error encountered, try to recover");
+                hls?.recoverMediaError();
+                break;
+              default:
+                console.error("Unrecoverable error encountered");
+                break;
+            }
+          }
+        });
       } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
         // Native HLS support (Safari)
-        videoElement.src = source;
+        videoElement.src = activeSource;
+        plyr = new Plyr(videoElement, plyrOptions);
+        plyrInstance.current = plyr;
+      } else {
+        setError("Your browser does not support HLS streaming. Please switch to 'MP4 Direct Play' below.");
       }
     } else {
       // Regular MP4
-      videoElement.src = source;
+      videoElement.src = activeSource;
+      plyr = new Plyr(videoElement, plyrOptions);
+      plyrInstance.current = plyr;
     }
 
     return () => {
@@ -136,7 +199,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         hlsInstance.current = null;
       }
     };
-  }, [video?.slug, video?.videoUrl]);
+  }, [activeSource]);
 
   const handleCopyLink = () => {
     const streamLink = `${window.location.origin}/${slug}`;
@@ -258,6 +321,68 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
               </div>
             </div>
 
+            {/* Playback quality and Server Connection Switcher */}
+            <div className={`p-4 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all duration-300 ${
+              darkMode 
+                ? "bg-zinc-900/60 border-zinc-800/80 shadow-inner" 
+                : "bg-zinc-50 border-zinc-200"
+            }`}>
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold tracking-widest uppercase opacity-50 flex items-center gap-1">
+                  <Database className="w-3 h-3 text-violet-500 animate-pulse" /> PLAYBACK SERVER CONNECTION
+                </p>
+                <p className="text-sm font-medium leading-relaxed opacity-90">
+                  Choose a server protocol if loading is slow or fails to play:
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {/* Adaptive HLS Protocol Trigger */}
+                {(video.hls_playlist_url || video.videoUrl || "").toLowerCase().includes(".m3u8") && (
+                  <button
+                    onClick={() => setPlaybackMode("hls")}
+                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-mono font-semibold rounded-xl border transition-all hover:scale-[1.02] cursor-pointer ${
+                      playbackMode === "hls"
+                        ? "bg-violet-500/10 text-violet-400 border-violet-500/40 shadow-sm"
+                        : darkMode 
+                          ? "bg-zinc-950/50 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700" 
+                          : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:border-zinc-300 shadow-sm"
+                    }`}
+                  >
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    Adaptive HLS (Auto)
+                  </button>
+                )}
+
+                {/* MP4 Quality-specific Protocols */}
+                {video.mp4_urls && Object.entries(video.mp4_urls).map(([quality, url]) => {
+                  if (!url) return null;
+                  const isActive = playbackMode === "mp4" && selectedMp4Quality === quality;
+                  return (
+                    <button
+                      key={quality}
+                      onClick={() => {
+                        setPlaybackMode("mp4");
+                        setSelectedMp4Quality(quality);
+                      }}
+                      className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-mono font-semibold rounded-xl border transition-all hover:scale-[1.02] cursor-pointer ${
+                        isActive
+                          ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/40 shadow-sm"
+                          : darkMode 
+                            ? "bg-zinc-950/50 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700" 
+                            : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:border-zinc-300 shadow-sm"
+                      }`}
+                    >
+                      <Film className={`w-3.5 h-3.5 ${isActive ? "text-indigo-400" : "text-zinc-400"}`} />
+                      Direct MP4 ({quality})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Meta stats and line */}
             <div className="flex flex-wrap gap-4 items-center text-xs font-mono font-medium opacity-85 pt-1.5 border-b border-zinc-500/5 pb-4">
               <div className="flex items-center gap-1.5">
@@ -274,6 +399,15 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
                 <Film className="w-4 h-4 text-fuchsia-500" />
                 <span>1080p Ultra HD</span>
               </div>
+              {video.fileSize && (
+                <>
+                  <span className="opacity-25">•</span>
+                  <div className="flex items-center gap-1.5">
+                    <Database className="w-4 h-4 text-emerald-500" />
+                    <span>{video.fileSize} MB</span>
+                  </div>
+                </>
+              )}
             </div>
 
 

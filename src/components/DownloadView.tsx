@@ -281,6 +281,11 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
               <span className="text-xs font-mono font-semibold opacity-75">Ready to Download</span>
             </div>
             <h1 className="text-lg font-display font-extrabold tracking-tight line-clamp-1">{video.title}</h1>
+            {video.fileSize && (
+              <p className="text-xs font-mono opacity-60 mt-0.5">
+                Size: <span className="text-violet-500 font-semibold">{video.fileSize} MB</span>
+              </p>
+            )}
           </div>
         </div>
 

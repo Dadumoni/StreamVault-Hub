@@ -220,6 +220,59 @@ async function getMongoDb() {
   }
 }
 
+function mapVideoRecord(video: any, realViews: number): any {
+  if (!video) return null;
+  const mappedSlug = video.slug || video.mapping || "";
+  const mappedVideoUrl = video.videoUrl || video.hls_playlist_url || "";
+  
+  let mappedThumbnailUrl = video.thumbnailUrl;
+  if (!mappedThumbnailUrl || mappedThumbnailUrl.includes("unsplash.com") || mappedThumbnailUrl.trim() === "") {
+    if (video.thumbnail_url && video.thumbnail_url.trim() !== "") {
+      mappedThumbnailUrl = video.thumbnail_url;
+    }
+  }
+  if (!mappedThumbnailUrl) {
+    mappedThumbnailUrl = "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=60";
+  }
+
+  const mappedFileSize = video.fileSize || (video.size ? Number((video.size / (1024 * 1024)).toFixed(2)) : 124.5);
+  const mappedDownloadUrl = video.downloadUrl || (video.mp4_urls ? Object.values(video.mp4_urls)[0] : "") || mappedVideoUrl || "";
+
+  let formattedDate = "2026-07-20";
+  try {
+    if (video.createdAt) {
+      formattedDate = video.createdAt;
+    } else if (video.created_at) {
+      let dateObj: Date | null = null;
+      if (video.created_at instanceof Date) {
+        dateObj = video.created_at;
+      } else if (typeof video.created_at === "string") {
+        dateObj = new Date(video.created_at);
+      } else if (video.created_at.$date) {
+        dateObj = new Date(video.created_at.$date);
+      } else if (typeof video.created_at === "object" && video.created_at.toString) {
+        dateObj = new Date(video.created_at.toString());
+      }
+      if (dateObj && !isNaN(dateObj.getTime())) {
+        formattedDate = dateObj.toISOString().split("T")[0];
+      }
+    }
+  } catch (e) {
+    console.error("Error formatting date:", e);
+  }
+
+  return {
+    ...video,
+    slug: mappedSlug,
+    videoUrl: mappedVideoUrl,
+    thumbnailUrl: mappedThumbnailUrl,
+    fileSize: mappedFileSize,
+    downloadUrl: mappedDownloadUrl,
+    createdAt: formattedDate,
+    views: realViews,
+  };
+}
+
 async function dbFetchVideos(): Promise<any[]> {
   const db = await getMongoDb();
   if (db && isMongoActive) {
@@ -235,7 +288,25 @@ async function dbFetchVideos(): Promise<any[]> {
           return local;
         }
       }
-      return videos;
+
+      // Fetch dynamic views from view_logs aggregation to be fast and accurate
+      const viewCounts = await db.collection("view_logs").aggregate([
+        { $group: { _id: "$slug", count: { $sum: 1 } } }
+      ]).toArray();
+      
+      const viewsMap = new Map<string, number>();
+      viewCounts.forEach((vc: any) => {
+        if (vc._id) {
+          viewsMap.set(vc._id, vc.count);
+        }
+      });
+
+      // Map properties for user document structure compatibility and dynamic views
+      return videos.map((video) => {
+        const mappedSlug = video.slug || video.mapping || "";
+        const realViews = (mappedSlug ? viewsMap.get(mappedSlug) : 0) || 0;
+        return mapVideoRecord(video, realViews);
+      });
     } catch (err) {
       console.error("Failed to fetch from MongoDB, falling back to JSON:", err);
     }
@@ -247,14 +318,21 @@ async function dbFetchVideoBySlug(slug: string): Promise<any | null> {
   const db = await getMongoDb();
   if (db && isMongoActive) {
     try {
-      const video = await db.collection("videos").findOne({ slug });
-      if (video) return video;
+      const video = await db.collection("videos").findOne({
+        $or: [{ slug: slug }, { mapping: slug }]
+      });
+      if (video) {
+        // Compute actual views from view_logs
+        const realViews = await db.collection("view_logs").countDocuments({ slug });
+        return mapVideoRecord(video, realViews);
+      }
     } catch (err) {
       console.error("Failed to find video by slug from MongoDB:", err);
     }
   }
   const local = readVideos();
-  return local.find((v) => v.slug === slug) || null;
+  const matched = local.find((v) => v.slug === slug || v.mapping === slug) || null;
+  return matched ? mapVideoRecord(matched, 0) : null;
 }
 
 function parseUserAgent(ua: string) {
@@ -335,8 +413,8 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
         timestamp
       });
 
-      // Increment video views in videos collection
-      await db.collection("videos").updateOne({ slug }, { $inc: { views: 1 } });
+      // Removed direct write to 'videos' collection to keep it read-only.
+      // Views are now calculated dynamically from the view_logs collection.
       return true;
     } catch (err) {
       console.error("Failed to log view in MongoDB:", err);
