@@ -89,47 +89,41 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
       hlsInstance.current = null;
     }
 
-    const initPlyr = () => {
-      const player = new Plyr(videoElement, {
-        controls: [
-          "play-large",
-          "play",
-          "progress",
-          "current-time",
-          "duration",
-          "mute",
-          "volume",
-          "captions",
-          "settings",
-          "pip",
-          "airplay",
-          "fullscreen",
-        ],
-        tooltips: { controls: true, seek: true },
-        keyboard: { global: true },
-        ratio: "16:9",
-      });
-      plyrInstance.current = player;
-    };
+    // Initialize Plyr first
+    const player = new Plyr(videoElement, {
+      controls: [
+        "play-large",
+        "play",
+        "progress",
+        "current-time",
+        "duration",
+        "mute",
+        "volume",
+        "captions",
+        "settings",
+        "pip",
+        "airplay",
+        "fullscreen",
+      ],
+      tooltips: { controls: true, seek: true },
+      keyboard: { global: true },
+      ratio: "16:9",
+    });
+    plyrInstance.current = player;
 
     if (isHls) {
       if (Hls.isSupported()) {
         const hls = new Hls();
         hls.loadSource(source);
         hls.attachMedia(videoElement);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          initPlyr();
-        });
         hlsInstance.current = hls;
       } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
         // Native HLS support (Safari)
         videoElement.src = source;
-        initPlyr();
       }
     } else {
       // Regular MP4
       videoElement.src = source;
-      initPlyr();
     }
 
     return () => {
@@ -211,11 +205,11 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         id="video-player-card"
         >
           {/* Custom video element container styled with Plyr overrides */}
-          <div key={video.slug} className="w-full bg-black overflow-hidden group">
+          <div key={video.slug} className="w-full bg-black overflow-hidden rounded-xl">
             <video
               ref={videoRef}
               playsInline
-              className="plyr w-full h-full"
+              className="w-full h-full"
               poster={video.thumbnailUrl}
               crossOrigin="anonymous"
             >

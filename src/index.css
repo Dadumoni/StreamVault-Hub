@@ -1,6 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
-@import url("https://cdn.plyr.io/3.7.8/plyr.css");
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -23,11 +22,19 @@
 .rounded-xl,
 .rounded-2xl,
 .rounded-3xl,
-.plyr,
-.plyr--video,
-.plyr__video-wrapper,
-.plyr__controls {
+/* Ensure the video element inside Plyr fills the container */
+.plyr {
   border-radius: 12px !important;
+  overflow: hidden !important;
+}
+
+.plyr__video-wrapper {
+  background: #000 !important;
+  aspect-ratio: 16 / 9 !important;
+}
+
+.plyr__video-wrapper video {
+  object-fit: contain !important;
 }
 
 /* Custom Plyr Theme Colors - Violet accent */

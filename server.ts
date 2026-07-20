@@ -205,7 +205,7 @@ async function getMongoDb() {
   try {
     mongoClient = new MongoClient(process.env.MONGODB_URI);
     await mongoClient.connect();
-    dbInstance = mongoClient.db();
+    dbInstance = mongoClient.db("streamvaulthub");
     isMongoActive = true;
     console.log("MongoDB connection successfully established!");
     
