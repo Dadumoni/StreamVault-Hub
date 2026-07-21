@@ -11,6 +11,7 @@ export interface Video {
   fileSize?: number;
   createdAt: string;
   mp4_urls?: Record<string, string>;
+  mp4_links?: Record<string, string>;
   hls_playlist_url?: string;
   bunnyVideoId?: string;
   uploadStatus?: "ready" | "uploading" | "transcoding" | "transcoding_done" | "migrating" | "completed" | "failed" | "migration_failed";

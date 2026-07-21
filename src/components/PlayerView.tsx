@@ -9,6 +9,13 @@ import {
 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
 
+// Fixes legacy records where an older migration script accidentally
+// baked in a double scheme, e.g. "https://https://pub-xxx.r2.dev/...".
+function fixUrl(u?: string | null): string {
+  if (!u) return "";
+  return u.replace(/^https?:\/\/https?:\/\//i, "https://");
+}
+
 interface PlayerViewProps {
   mapping: string;
   darkMode: boolean;
@@ -30,11 +37,44 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
   // Compute active video source URL (prioritize HLS m3u8, fallback to high-quality MP4)
   let activeSource = "";
   if (video) {
-    activeSource = video.hls_playlist_url || video.videoUrl || "";
+    activeSource = fixUrl(video.hls_playlist_url || video.videoUrl);
     if (!activeSource && video.mp4_urls && Object.keys(video.mp4_urls).length > 0) {
       const qualities = Object.keys(video.mp4_urls);
-      activeSource = video.mp4_urls["1080p"] || video.mp4_urls["720p"] || video.mp4_urls[qualities[0]];
+      activeSource = fixUrl(
+        video.mp4_urls["1080p"] || video.mp4_urls["720p"] || video.mp4_urls[qualities[0]]
+      );
     }
+  }
+
+  // { "240p": url, "original": url, ... } straight from whichever field the record uses,
+  // sanitized and sorted so numeric qualities come before "original"
+  function mp4QualityMap(v: Video): Record<string, string> {
+    const raw = v.mp4_urls && Object.keys(v.mp4_urls).length > 0 ? v.mp4_urls : v.mp4_links || {};
+    const map: Record<string, string> = {};
+    Object.entries(raw).forEach(([label, url]) => {
+      map[label] = fixUrl(url as string);
+    });
+    return map;
+  }
+
+  function sortQualityLabels(labels: string[]): string[] {
+    return [...labels].sort((a, b) => {
+      const na = parseInt(a, 10), nb = parseInt(b, 10);
+      if (!isNaN(na) && !isNaN(nb)) return nb - na;
+      if (!isNaN(na)) return -1;
+      if (!isNaN(nb)) return 1;
+      return a.localeCompare(b);
+    });
+  }
+
+  // Dynamic label for the meta row (replaces a hardcoded "1080p Ultra HD")
+  function computeQualityLabel(v: Video): string {
+    const map = mp4QualityMap(v);
+    const labels = sortQualityLabels(Object.keys(map));
+    const topNumeric = labels.find((l) => !isNaN(parseInt(l, 10)));
+    if (topNumeric) return `${topNumeric} Stream`;
+    if (v.hls_playlist_url || v.videoUrl?.includes(".m3u8")) return "Adaptive HLS Stream";
+    return "HD Stream";
   }
 
   // Fetch application configuration (including channelLink) on mount
@@ -87,6 +127,10 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
 
     const videoElement = videoRef.current;
     const isHls = activeSource.toLowerCase().includes(".m3u8");
+    const mp4Map = mp4QualityMap(video);
+    const mp4Labels = sortQualityLabels(Object.keys(mp4Map));
+    const mp4Fallback =
+      mp4Map[mp4Labels.find((l) => isNaN(parseInt(l, 10))) || mp4Labels[0]] || fixUrl(video.downloadUrl);
 
     // Clean up previous instances completely
     if (plyrInstance.current) {
@@ -98,29 +142,125 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
       hlsInstance.current = null;
     }
 
-    const plyrOptions = {
-      controls: [
-        "play-large",
-        "play",
-        "progress",
-        "current-time",
-        "duration",
-        "mute",
-        "volume",
-        "captions",
-        "settings",
-        "pip",
-        "airplay",
-        "fullscreen",
-      ],
-      tooltips: { controls: true, seek: true },
-      keyboard: { global: true },
-      ratio: "16:9",
-      autoplay: false,
-    };
+    const baseControls = [
+      "play-large",
+      "play",
+      "progress",
+      "current-time",
+      "duration",
+      "mute", // kept
+      // "volume" intentionally removed — no volume slider
+      "captions",
+      "settings",
+      "pip",
+      "airplay",
+      "fullscreen",
+    ];
 
     let hls: Hls | null = null;
-    let plyr: Plyr | null = null;
+    let networkRetries = 0;
+    let mediaRetries = 0;
+    const MAX_RETRIES = 2;
+
+    // Manual quality menu driven by mp4 renditions — used when the HLS
+    // stream has only one rendition, or as the primary path for plain MP4
+    function initPlyrWithMp4Sources(startSrc?: string) {
+      if (mp4Labels.length === 0) {
+        const p = new Plyr(videoElement, {
+          controls: baseControls,
+          tooltips: { controls: true, seek: true },
+          keyboard: { global: true },
+          ratio: "16:9",
+          autoplay: false,
+        });
+        plyrInstance.current = p;
+        return p;
+      }
+
+      const sources = mp4Labels.map((label) => ({
+        src: mp4Map[label],
+        size: parseInt(label, 10) || 0, // "original" -> 0
+      }));
+
+      videoElement.src = startSrc || sources[0].src;
+
+      const p = new Plyr(videoElement, {
+        controls: baseControls,
+        tooltips: { controls: true, seek: true },
+        keyboard: { global: true },
+        ratio: "16:9",
+        autoplay: false,
+        settings: ["quality", "speed"],
+        quality: {
+          default: sources[0].size,
+          options: sources.map((s) => s.size),
+          forced: true,
+          onChange: (newQuality: number) => {
+            const match = sources.find((s) => s.size === newQuality);
+            if (match) {
+              const t = videoElement.currentTime;
+              const wasPlaying = !videoElement.paused;
+              videoElement.src = match.src;
+              videoElement.currentTime = t;
+              if (wasPlaying) videoElement.play().catch(() => {});
+            }
+          },
+        },
+        i18n: {
+          qualityLabel: Object.fromEntries(sources.map((s) => [s.size, s.size === 0 ? "Original" : `${s.size}p`])),
+        },
+      });
+      plyrInstance.current = p;
+      return p;
+    }
+
+    // Adaptive quality menu driven by hls.js levels (true multi-bitrate HLS)
+    function initPlyrWithHlsLevels(hlsRef: Hls) {
+      const levels = hlsRef.levels || [];
+      const heights = [...new Set(levels.map((l) => l.height).filter(Boolean))].sort((a, b) => b - a);
+      const options = [0, ...heights]; // 0 = Auto
+
+      const p = new Plyr(videoElement, {
+        controls: baseControls,
+        tooltips: { controls: true, seek: true },
+        keyboard: { global: true },
+        ratio: "16:9",
+        autoplay: false,
+        settings: ["quality", "speed"],
+        quality: {
+          default: 0,
+          options,
+          forced: true,
+          onChange: (newQuality: number) => {
+            if (newQuality === 0) {
+              hlsRef.currentLevel = -1; // auto
+            } else {
+              const idx = levels.findIndex((l) => l.height === newQuality);
+              if (idx > -1) hlsRef.currentLevel = idx;
+            }
+          },
+        },
+        i18n: { qualityLabel: { 0: "Auto" } },
+      });
+      plyrInstance.current = p;
+      return p;
+    }
+
+    function fallbackToMp4() {
+      if (hlsInstance.current) {
+        hlsInstance.current.destroy();
+        hlsInstance.current = null;
+      }
+      if (plyrInstance.current) {
+        plyrInstance.current.destroy();
+        plyrInstance.current = null;
+      }
+      if (!mp4Fallback) {
+        setError("This stream could not be loaded and no direct download is available.");
+        return;
+      }
+      initPlyrWithMp4Sources(mp4Fallback);
+    }
 
     if (isHls) {
       if (Hls.isSupported()) {
@@ -134,40 +274,81 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
         hlsInstance.current = hls;
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          plyr = new Plyr(videoElement, plyrOptions);
-          plyrInstance.current = plyr;
-        });
-
-        hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            switch (data.type) {
-              case Hls.ErrorTypes.NETWORK_ERROR:
-                console.log("fatal network error encountered, try to recover");
-                hls?.startLoad();
-                break;
-              case Hls.ErrorTypes.MEDIA_ERROR:
-                console.log("fatal media error encountered, try to recover");
-                hls?.recoverMediaError();
-                break;
-              default:
-                console.error("Unrecoverable error encountered");
-                break;
+          if (hls && hls.levels && hls.levels.length > 1) {
+            initPlyrWithHlsLevels(hls);
+          } else {
+            // single-rendition HLS — prefer manual mp4 quality menu if we have one,
+            // otherwise just play the HLS stream with no quality menu
+            if (mp4Labels.length > 0) {
+              hls?.destroy();
+              hlsInstance.current = null;
+              initPlyrWithMp4Sources();
+            } else {
+              const p = new Plyr(videoElement, {
+                controls: baseControls,
+                tooltips: { controls: true, seek: true },
+                keyboard: { global: true },
+                ratio: "16:9",
+                autoplay: false,
+              });
+              plyrInstance.current = p;
             }
           }
         });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (!data.fatal) return;
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              networkRetries++;
+              if (networkRetries <= MAX_RETRIES) {
+                console.log("fatal network error, retrying...");
+                hls?.startLoad();
+              } else {
+                console.warn("HLS network error unrecoverable, falling back to MP4");
+                fallbackToMp4();
+              }
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              mediaRetries++;
+              if (mediaRetries <= MAX_RETRIES) {
+                console.log("fatal media error, retrying...");
+                hls?.recoverMediaError();
+              } else {
+                console.warn("HLS media error unrecoverable, falling back to MP4");
+                fallbackToMp4();
+              }
+              break;
+            default:
+              console.warn("Unrecoverable HLS error, falling back to MP4");
+              fallbackToMp4();
+              break;
+          }
+        });
       } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
-        // Native HLS support (Safari)
-        videoElement.src = activeSource;
-        plyr = new Plyr(videoElement, plyrOptions);
-        plyrInstance.current = plyr;
+        // Native HLS (Safari) — no per-level quality API here, so offer
+        // manual quality switching via the mp4 renditions instead when available
+        if (mp4Labels.length > 0) {
+          initPlyrWithMp4Sources();
+        } else {
+          videoElement.src = activeSource;
+          const p = new Plyr(videoElement, {
+            controls: baseControls,
+            tooltips: { controls: true, seek: true },
+            keyboard: { global: true },
+            ratio: "16:9",
+            autoplay: false,
+          });
+          plyrInstance.current = p;
+        }
+      } else if (mp4Labels.length > 0) {
+        initPlyrWithMp4Sources();
       } else {
-        setError("Your browser does not support HLS streaming. Please switch to 'MP4 Direct Play' below.");
+        setError("Your browser does not support HLS streaming, and no direct MP4 is available for this video.");
       }
     } else {
-      // Regular MP4
-      videoElement.src = activeSource;
-      plyr = new Plyr(videoElement, plyrOptions);
-      plyrInstance.current = plyr;
+      // Regular MP4 — still offer quality switching if multiple renditions exist
+      initPlyrWithMp4Sources(activeSource);
     }
 
     return () => {
@@ -181,6 +362,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
       }
     };
   }, [activeSource]);
+
 
   const handleCopyLink = () => {
     const streamLink = `${window.location.origin}/${mapping}`;
@@ -292,8 +474,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
               ref={videoRef}
               playsInline
               className="w-full h-full"
-              poster={video.thumbnailUrl}
-              crossOrigin="anonymous"
+              poster={fixUrl(video.thumbnailUrl)}
             >
               Your browser does not support the video tag.
             </video>
@@ -354,7 +535,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
               <span className="opacity-25">•</span>
               <div className="flex items-center gap-1.5">
                 <Film className="w-4 h-4 text-fuchsia-500" />
-                <span>1080p Ultra HD</span>
+                <span>{computeQualityLabel(video)}</span>
               </div>
               {video.fileSize && (
                 <>
