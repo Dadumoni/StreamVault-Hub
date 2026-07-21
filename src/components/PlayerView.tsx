@@ -148,8 +148,8 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
       "progress",
       "current-time",
       "duration",
-      "mute", // kept
-      // "volume" intentionally removed — no volume slider
+      "mute",
+      "volume",
       "captions",
       "settings",
       "pip",
@@ -172,6 +172,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
           keyboard: { global: true },
           ratio: "16:9",
           autoplay: false,
+          iconUrl: "/plyr.svg",
         });
         plyrInstance.current = p;
         return p;
@@ -190,6 +191,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
         keyboard: { global: true },
         ratio: "16:9",
         autoplay: false,
+        iconUrl: "/plyr.svg",
         settings: ["quality", "speed"],
         quality: {
           default: sources[0].size,
@@ -226,6 +228,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
         keyboard: { global: true },
         ratio: "16:9",
         autoplay: false,
+        iconUrl: "/plyr.svg",
         settings: ["quality", "speed"],
         quality: {
           default: 0,
@@ -269,8 +272,6 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
           enableWorker: true,
           lowLatencyMode: true,
         });
-        hls.loadSource(activeSource);
-        hls.attachMedia(videoElement);
         hlsInstance.current = hls;
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -290,6 +291,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
                 keyboard: { global: true },
                 ratio: "16:9",
                 autoplay: false,
+                iconUrl: "/plyr.svg",
               });
               plyrInstance.current = p;
             }
@@ -325,6 +327,9 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
               break;
           }
         });
+
+        hls.loadSource(activeSource);
+        hls.attachMedia(videoElement);
       } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
         // Native HLS (Safari) — no per-level quality API here, so offer
         // manual quality switching via the mp4 renditions instead when available
@@ -338,6 +343,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
             keyboard: { global: true },
             ratio: "16:9",
             autoplay: false,
+            iconUrl: "/plyr.svg",
           });
           plyrInstance.current = p;
         }

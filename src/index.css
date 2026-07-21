@@ -45,6 +45,11 @@
   --plyr-menu-color: #f4f4f5;
 }
 
+/* Hide Plyr volume slider safely to prevent JS initialization crashes */
+.plyr__volume {
+  display: none !important;
+}
+
 /* Light / Dark Mode transition */
 body {
   transition: background-color 0.3s ease, color 0.3s ease;
