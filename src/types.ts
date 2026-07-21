@@ -1,5 +1,6 @@
 export interface Video {
-  slug: string;
+  mapping: string;
+  slug?: string;
   title: string;
   description: string;
   videoUrl: string;
@@ -11,6 +12,10 @@ export interface Video {
   createdAt: string;
   mp4_urls?: Record<string, string>;
   hls_playlist_url?: string;
+  bunnyVideoId?: string;
+  uploadStatus?: "ready" | "uploading" | "transcoding" | "transcoding_done" | "migrating" | "completed" | "failed" | "migration_failed";
+  transcodingProgress?: number;
+  r2Url?: string;
 }
 
 export interface TaskConfig {

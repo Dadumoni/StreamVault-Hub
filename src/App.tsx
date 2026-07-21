@@ -58,11 +58,11 @@ export default function App() {
     // Strip leading slash
     const slug = path.substring(1);
     if (slug && slug !== "home" && slug !== "index.html" && slug !== "player" && slug !== "player/") {
-      return <PlayerView slug={slug} darkMode={darkMode} navigate={navigate} />;
+      return <PlayerView mapping={slug} darkMode={darkMode} navigate={navigate} />;
     }
 
-    // Fallback: If root or empty, we load PlayerView with an empty slug (triggering missing parameter message)
-    return <PlayerView slug="" darkMode={darkMode} navigate={navigate} />;
+    // Fallback: If root or empty, we load PlayerView with an empty mapping (triggering missing parameter message)
+    return <PlayerView mapping="" darkMode={darkMode} navigate={navigate} />;
   };
 
   return (

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Video, TaskConfig } from "../types";
 import { 
   ArrowLeft, Lock, Unlock, CheckCircle2, ShieldCheck, 
-  Clock, AlertTriangle, ExternalLink, RefreshCw, FileVideo, ShieldAlert 
+  Clock, AlertTriangle, ExternalLink, RefreshCw, FileVideo, ShieldAlert, Loader2
 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
 
@@ -230,6 +230,44 @@ export default function DownloadView({ slug, darkMode, navigate }: DownloadViewP
             className="flex items-center justify-center gap-2 mx-auto px-6 py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-medium rounded-xl transition-all hover:scale-105 cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" /> Go Back to Player
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (video.uploadStatus !== "completed") {
+    return (
+      <div className={`min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center p-6 text-center ${
+        darkMode ? "bg-zinc-950 text-zinc-100" : "bg-zinc-50 text-zinc-900"
+      }`}>
+        <div className={`max-w-md p-8 rounded-2xl border ${
+          darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-200 shadow-lg"
+        }`}
+        id="transcoding-notice"
+        >
+          <Loader2 className="w-12 h-12 text-violet-500 mx-auto mb-4 animate-spin" />
+          <h2 className="text-2xl font-display font-bold mb-2">Transcoding in Progress</h2>
+          <p className={`text-sm mb-6 leading-relaxed ${darkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+            "{video.title}" is currently being processed by Bunny Stream to prepare adaptive bitrate streaming directories.
+          </p>
+          <div className="space-y-1.5 mb-6">
+            <div className="h-1.5 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-violet-500 transition-all duration-500"
+                style={{ width: `${video.transcodingProgress || 0}%` }}
+              ></div>
+            </div>
+            <div className="flex justify-between text-[10px] font-mono opacity-50">
+              <span className="font-bold">STATUS: WAITING</span>
+              <span>{video.transcodingProgress || 0}%</span>
+            </div>
+          </div>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-5 py-2.5 bg-zinc-900 dark:bg-zinc-800 hover:bg-zinc-800 dark:hover:bg-zinc-700 text-white text-xs font-bold rounded-xl transition-all hover:scale-102 cursor-pointer"
+          >
+            Refresh Page
           </button>
         </div>
       </div>

@@ -5,42 +5,35 @@ import Hls from "hls.js";
 import "plyr/dist/plyr.css";
 import { 
   ArrowLeft, Download, Share2, Eye, Calendar, Clock, 
-  Copy, Check, Facebook, Twitter, Mail, HelpCircle, Film, Sparkles, ExternalLink, Database
+  Copy, Check, Facebook, Twitter, Mail, HelpCircle, Film, Sparkles, ExternalLink, Database, Loader2
 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
 
 interface PlayerViewProps {
-  slug: string;
+  mapping: string;
   darkMode: boolean;
   navigate: (path: string) => void;
 }
 
-export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps) {
+export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewProps) {
   const [video, setVideo] = useState<Video | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const [showShareModal, setShowShareModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const [channelLink, setChannelLink] = useState("");
-  const [playbackMode, setPlaybackMode] = useState<"hls" | "mp4">("hls");
-  const [selectedMp4Quality, setSelectedMp4Quality] = useState<string>("");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const plyrInstance = useRef<Plyr | null>(null);
   const hlsInstance = useRef<Hls | null>(null);
 
-  // Compute active video source URL
+  // Compute active video source URL (prioritize HLS m3u8, fallback to high-quality MP4)
   let activeSource = "";
   if (video) {
-    const hasHls = (video.hls_playlist_url || video.videoUrl || "").toLowerCase().includes(".m3u8");
-    if (playbackMode === "hls" && hasHls) {
-      activeSource = video.hls_playlist_url || video.videoUrl;
-    } else if (video.mp4_urls && Object.keys(video.mp4_urls).length > 0) {
+    activeSource = video.hls_playlist_url || video.videoUrl || "";
+    if (!activeSource && video.mp4_urls && Object.keys(video.mp4_urls).length > 0) {
       const qualities = Object.keys(video.mp4_urls);
-      const quality = selectedMp4Quality || qualities[0];
-      activeSource = video.mp4_urls[quality];
-    } else {
-      activeSource = video.videoUrl;
+      activeSource = video.mp4_urls["1080p"] || video.mp4_urls["720p"] || video.mp4_urls[qualities[0]];
     }
   }
 
@@ -64,32 +57,20 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
 
   useEffect(() => {
     const fetchVideoDetails = async () => {
-      if (!slug || slug.trim() === "") {
-        setError("Missing URL Parameter: No video slug detected. Please specify a valid video slug at the end of the URL, e.g., https://domain.com/sintel-cosmic-tale");
+      if (!mapping || mapping.trim() === "") {
+        setError("Missing URL Parameter: No video mapping detected. Please specify a valid video mapping at the end of the URL.");
         setIsLoading(false);
         return;
       }
       try {
         setIsLoading(true);
         setError("");
-        const res = await fetch(getApiUrl(`/api/videos/${slug}`));
+        const res = await fetch(getApiUrl(`/api/videos/${mapping}`));
         if (!res.ok) {
           throw new Error("This streaming channel is inactive or could not be found.");
         }
         const data = await res.json();
         setVideo(data);
-        
-        // Auto-configure default playback mode and quality
-        const hasHls = (data.hls_playlist_url || data.videoUrl || "").toLowerCase().includes(".m3u8");
-        if (hasHls) {
-          setPlaybackMode("hls");
-        } else {
-          setPlaybackMode("mp4");
-        }
-        if (data.mp4_urls && Object.keys(data.mp4_urls).length > 0) {
-          const qualities = Object.keys(data.mp4_urls);
-          setSelectedMp4Quality(qualities[0]);
-        }
       } catch (err: any) {
         setError(err.message || "Failed to load video details.");
       } finally {
@@ -98,7 +79,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
     };
 
     fetchVideoDetails();
-  }, [slug]);
+  }, [mapping]);
 
   // Initialize Plyr and HLS
   useEffect(() => {
@@ -202,14 +183,14 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
   }, [activeSource]);
 
   const handleCopyLink = () => {
-    const streamLink = `${window.location.origin}/${slug}`;
+    const streamLink = `${window.location.origin}/${mapping}`;
     navigator.clipboard.writeText(streamLink);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const shareText = `Check out this amazing stream: ${video?.title || "Video"}`;
-  const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/${slug}` : "";
+  const shareUrl = typeof window !== "undefined" ? `${window.location.origin}/${mapping}` : "";
 
   if (isLoading) {
     return (
@@ -253,6 +234,44 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
     );
   }
 
+  if (video.uploadStatus !== "completed") {
+    return (
+      <div className={`min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center p-6 text-center ${
+        darkMode ? "bg-zinc-950 text-zinc-100" : "bg-zinc-50 text-zinc-900"
+      }`}>
+        <div className={`max-w-md p-8 rounded-2xl border ${
+          darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-200 shadow-lg"
+        }`}
+        id="transcoding-notice"
+        >
+          <Loader2 className="w-12 h-12 text-violet-500 mx-auto mb-4 animate-spin" />
+          <h2 className="text-2xl font-display font-bold mb-2">Transcoding in Progress</h2>
+          <p className={`text-sm mb-6 leading-relaxed ${darkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+            "{video.title}" is currently being processed by Bunny Stream to prepare adaptive bitrate streaming directories.
+          </p>
+          <div className="space-y-1.5 mb-6">
+            <div className="h-1.5 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-violet-500 transition-all duration-500"
+                style={{ width: `${video.transcodingProgress || 0}%` }}
+              ></div>
+            </div>
+            <div className="flex justify-between text-[10px] font-mono opacity-50">
+              <span className="font-bold">STATUS: WAITING</span>
+              <span>{video.transcodingProgress || 0}%</span>
+            </div>
+          </div>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-5 py-2.5 bg-zinc-900 dark:bg-zinc-800 hover:bg-zinc-800 dark:hover:bg-zinc-700 text-white text-xs font-bold rounded-xl transition-all hover:scale-[1.02] cursor-pointer"
+          >
+            Refresh Page
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-[calc(100vh-4rem)] py-8 px-4 sm:px-6 lg:px-8 bg-grid-pattern transition-colors duration-300 ${
       darkMode ? "bg-zinc-950 text-zinc-100" : "bg-zinc-50 text-zinc-900 bg-grid-pattern-light"
@@ -268,7 +287,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
         id="video-player-card"
         >
           {/* Custom video element container styled with Plyr overrides */}
-          <div key={video.slug} className="w-full bg-black overflow-hidden rounded-xl">
+          <div key={video.mapping} className="w-full bg-black overflow-hidden rounded-xl">
             <video
               ref={videoRef}
               playsInline
@@ -312,74 +331,12 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
                 </button>
 
                 <button
-                  onClick={() => navigate(`/download/${video.slug}`)}
+                  onClick={() => navigate(`/download/${video.mapping}`)}
                   className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold text-sm rounded-xl shadow-lg shadow-violet-500/15 transition-all hover:scale-102 cursor-pointer"
                   id="download-video-btn"
                 >
                   <Download className="w-4 h-4" /> Download Video
                 </button>
-              </div>
-            </div>
-
-            {/* Playback quality and Server Connection Switcher */}
-            <div className={`p-4 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all duration-300 ${
-              darkMode 
-                ? "bg-zinc-900/60 border-zinc-800/80 shadow-inner" 
-                : "bg-zinc-50 border-zinc-200"
-            }`}>
-              <div className="space-y-1">
-                <p className="text-[10px] font-bold tracking-widest uppercase opacity-50 flex items-center gap-1">
-                  <Database className="w-3 h-3 text-violet-500 animate-pulse" /> PLAYBACK SERVER CONNECTION
-                </p>
-                <p className="text-sm font-medium leading-relaxed opacity-90">
-                  Choose a server protocol if loading is slow or fails to play:
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {/* Adaptive HLS Protocol Trigger */}
-                {(video.hls_playlist_url || video.videoUrl || "").toLowerCase().includes(".m3u8") && (
-                  <button
-                    onClick={() => setPlaybackMode("hls")}
-                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-mono font-semibold rounded-xl border transition-all hover:scale-[1.02] cursor-pointer ${
-                      playbackMode === "hls"
-                        ? "bg-violet-500/10 text-violet-400 border-violet-500/40 shadow-sm"
-                        : darkMode 
-                          ? "bg-zinc-950/50 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700" 
-                          : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:border-zinc-300 shadow-sm"
-                    }`}
-                  >
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                    </span>
-                    Adaptive HLS (Auto)
-                  </button>
-                )}
-
-                {/* MP4 Quality-specific Protocols */}
-                {video.mp4_urls && Object.entries(video.mp4_urls).map(([quality, url]) => {
-                  if (!url) return null;
-                  const isActive = playbackMode === "mp4" && selectedMp4Quality === quality;
-                  return (
-                    <button
-                      key={quality}
-                      onClick={() => {
-                        setPlaybackMode("mp4");
-                        setSelectedMp4Quality(quality);
-                      }}
-                      className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-mono font-semibold rounded-xl border transition-all hover:scale-[1.02] cursor-pointer ${
-                        isActive
-                          ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/40 shadow-sm"
-                          : darkMode 
-                            ? "bg-zinc-950/50 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700" 
-                            : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:border-zinc-300 shadow-sm"
-                      }`}
-                    >
-                      <Film className={`w-3.5 h-3.5 ${isActive ? "text-indigo-400" : "text-zinc-400"}`} />
-                      Direct MP4 ({quality})
-                    </button>
-                  );
-                })}
               </div>
             </div>
 
@@ -475,7 +432,7 @@ export default function PlayerView({ slug, darkMode, navigate }: PlayerViewProps
                 <input
                   type="text"
                   readOnly
-                  value={`${window.location.origin}/${slug}`}
+                  value={`${window.location.origin}/${mapping}`}
                   className={`flex-grow px-3 py-2 rounded-lg border text-xs font-mono select-all outline-none ${
                     darkMode ? "bg-zinc-950 border-zinc-800" : "bg-zinc-100 border-zinc-200"
                   }`}

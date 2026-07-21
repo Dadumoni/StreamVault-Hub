@@ -4,7 +4,9 @@ import {
   LayoutDashboard, FileVideo, Eye, HardDrive, Shield, Activity, 
   Plus, Trash2, Edit2, Search, ArrowLeft, Laptop, Tablet, 
   Smartphone, Globe, RefreshCw, X, AlertCircle, CheckCircle2,
-  Calendar, Clock, Film, Sparkles, ExternalLink, Lock
+  Calendar, Clock, Film, Sparkles, ExternalLink, Lock,
+  UploadCloud, Folder, File, ChevronRight, MoreVertical,
+  Filter, Grid, List, Download, Share2, Loader2, Database
 } from "lucide-react";
 import { getApiUrl } from "../utils/api";
 import { generateRandomSlug } from "./HomeView";
@@ -50,14 +52,29 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
   const [authError, setAuthError] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<"overview" | "files">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "files" | "uploader">("overview");
   const [videos, setVideos] = useState<Video[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   
+  // File View Mode
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  
   // File Search
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Uploader State
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadQueue, setUploadQueue] = useState<{
+    id: string;
+    file: File;
+    status: "idle" | "uploading" | "transcoding" | "migrating" | "completed" | "failed";
+    progress: number;
+    slug?: string;
+    error?: string;
+  }[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Video Form states (Add/Edit)
   const [showFormModal, setShowFormModal] = useState(false);
@@ -112,6 +129,136 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
     }
   };
 
+  // --- UPLOADER LOGIC ---
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const onDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFiles = Array.from(e.dataTransfer.files) as File[];
+    const files = droppedFiles.filter(f => f.type.startsWith("video/"));
+    if (files.length > 0) {
+      handleFilesSelected(files);
+    }
+  };
+
+  const handleFilesSelected = (files: File[]) => {
+    const newItems = files.map(file => ({
+      id: Math.random().toString(36).substring(7),
+      file,
+      status: "uploading" as const,
+      progress: 0
+    }));
+    setUploadQueue(prev => [...prev, ...newItems]);
+
+    // Start uploads immediately!
+    newItems.forEach(item => {
+      startUpload(item.id, item.file);
+    });
+  };
+
+  const startUpload = async (id: string, fileToUpload?: File) => {
+    const file = fileToUpload || uploadQueue.find(i => i.id === id)?.file;
+    if (!file) return;
+
+    setUploadQueue(prev => prev.map(i => i.id === id ? { ...i, status: "uploading", progress: 5 } : i));
+
+    try {
+      // 1. Initialize on our server & Bunny
+      const initRes = await fetch(getApiUrl("/api/upload/init"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: file.name.replace(/\.[^/.]+$/, "") })
+      });
+      const initData = await initRes.json();
+      if (!initRes.ok) throw new Error(initData.error);
+
+      const { bunnyVideoId, libraryId, apiKey, slug } = initData;
+
+      // 2. Upload directly to Bunny Stream (TUS or direct PUT)
+      // For simplicity in this demo, we use the direct PUT API
+      const uploadUrl = `https://video.bunnycdn.com/library/${libraryId}/videos/${bunnyVideoId}`;
+      
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl, true);
+      xhr.setRequestHeader("AccessKey", apiKey);
+      
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setUploadQueue(prev => prev.map(i => i.id === id ? { ...i, progress: pct } : i));
+        }
+      };
+
+      xhr.onload = async () => {
+        if (xhr.status === 200) {
+          try {
+            await fetch(getApiUrl(`/api/upload/complete/${slug}`), { method: "POST" });
+          } catch (err) {
+            console.error("Failed to mark upload complete on server:", err);
+          }
+          setUploadQueue(prev => prev.map(i => i.id === id ? { ...i, status: "completed", progress: 100, slug } : i));
+          fetchData(); // Refresh the files list so the new video shows with "Waiting" status
+        } else {
+          setUploadQueue(prev => prev.map(i => i.id === id ? { ...i, status: "failed", error: "Upload failed at Bunny CDN" } : i));
+        }
+      };
+
+      xhr.onerror = () => {
+        setUploadQueue(prev => prev.map(i => i.id === id ? { ...i, status: "failed", error: "Network error during upload" } : i));
+      };
+
+      xhr.send(file);
+
+    } catch (err: any) {
+      setUploadQueue(prev => prev.map(i => i.id === id ? { ...i, status: "failed", error: err.message } : i));
+    }
+  };
+
+  const pollStatus = async (slug: string, queueId: string) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(getApiUrl(`/api/upload/status/${slug}`));
+        const data = await res.json();
+        
+        if (data.status === "completed") {
+          clearInterval(interval);
+          setUploadQueue(prev => prev.map(i => i.id === queueId ? { ...i, status: "completed", progress: 100 } : i));
+          fetchData(); // Refresh file list
+        } else if (data.status === "failed") {
+          clearInterval(interval);
+          setUploadQueue(prev => prev.map(i => i.id === queueId ? { ...i, status: "failed", error: "Transcoding failed" } : i));
+        } else {
+          setUploadQueue(prev => prev.map(i => i.id === queueId ? { ...i, progress: data.progress } : i));
+        }
+      } catch (e) {
+        console.error("Polling error:", e);
+      }
+    }, 3000);
+  };
+
+  const triggerMigration = async (slug: string) => {
+    try {
+      const res = await fetch(getApiUrl("/api/upload/migrate-r2"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug })
+      });
+      if (res.ok) {
+        fetchData(); // Refresh UI to show "migrating" status
+      }
+    } catch (e) {
+      console.error("Migration trigger failed:", e);
+    }
+  };
+
   const fetchData = async () => {
     try {
       setIsLoading(true);
@@ -144,23 +291,6 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleOpenAddModal = () => {
-    setEditingVideo(null);
-    setFormData({
-      title: "",
-      slug: generateRandomSlug(10),
-      description: "",
-      videoUrl: "",
-      downloadUrl: "",
-      thumbnailUrl: "",
-      duration: "05:00",
-      fileSize: "124.5",
-    });
-    setFormError("");
-    setFormSuccess("");
-    setShowFormModal(true);
   };
 
   const handleOpenEditModal = (video: Video) => {
@@ -563,42 +693,356 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           
           {/* LEFT COLUMN: Sidebar Menu */}
-          <aside className="lg:col-span-3 space-y-2">
-            <div className={`p-1.5 rounded-2xl border ${darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-100 shadow-sm"} space-y-1`}>
-              <button
-                onClick={() => setActiveTab("overview")}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                  activeTab === "overview"
-                    ? "bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-500/10"
-                    : darkMode
-                      ? "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
-                      : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50"
-                }`}
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                <span>Overview</span>
-              </button>
+          <aside className="lg:col-span-3 space-y-6">
+            <div className={`p-4 rounded-2xl border ${darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-100 shadow-sm"}`}>
+              <div className="flex items-center gap-3 mb-6 px-2">
+                <div className="w-8 h-8 rounded-lg bg-violet-500 flex items-center justify-center text-white font-bold">M</div>
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-widest opacity-80">Drive Manager</h4>
+                  <p className="text-[10px] opacity-40">System Explorer v2.1</p>
+                </div>
+              </div>
 
-              <button
-                onClick={() => setActiveTab("files")}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
-                  activeTab === "files"
-                    ? "bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg shadow-violet-500/10"
-                    : darkMode
-                      ? "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50"
-                      : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50"
-                }`}
-              >
-                <FileVideo className="w-4 h-4" />
-                <span>All Files</span>
-              </button>
+              <div className="space-y-1">
+                <p className="text-[10px] font-bold text-zinc-500 px-3 py-2 uppercase tracking-tighter">Main Navigation</p>
+                <button
+                  onClick={() => setActiveTab("overview")}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                    activeTab === "overview"
+                      ? "bg-violet-500/10 text-violet-500"
+                      : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <LayoutDashboard className="w-4 h-4" />
+                    <span>Dashboard</span>
+                  </div>
+                  {activeTab === "overview" && <div className="w-1.5 h-1.5 rounded-full bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.5)]"></div>}
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("files")}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                    activeTab === "files"
+                      ? "bg-violet-500/10 text-violet-500"
+                      : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Folder className="w-4 h-4" />
+                    <span>My Cloud Drive</span>
+                  </div>
+                  {activeTab === "files" && <div className="w-1.5 h-1.5 rounded-full bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.5)]"></div>}
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("uploader")}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                    activeTab === "uploader"
+                      ? "bg-violet-500/10 text-violet-500"
+                      : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:hover:text-zinc-100 dark:hover:bg-zinc-800/40"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <UploadCloud className="w-4 h-4" />
+                    <span>Bulk Uploader</span>
+                  </div>
+                  {activeTab === "uploader" && <div className="w-1.5 h-1.5 rounded-full bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.5)]"></div>}
+                </button>
+              </div>
             </div>
+
 
           </aside>
 
           {/* RIGHT COLUMN: Tab Panel */}
           <main className="lg:col-span-9 space-y-8">
             
+            {/* TAB 2: ALL FILES (File Manager Look) */}
+            {activeTab === "files" && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className={`p-6 rounded-2xl border ${darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-200 shadow-sm"} space-y-6`}>
+                  <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 rounded-xl bg-violet-500/10 text-violet-500">
+                        <Folder className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-display font-black tracking-tight">My Cloud Drive</h3>
+                        <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest opacity-40">
+                          <span>Root</span>
+                          <ChevronRight className="w-3 h-3" />
+                          <span>Streams</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-2 w-full md:w-auto">
+                      <div className="relative flex-1 md:w-64">
+                        <Search className="w-4 h-4 absolute left-3 top-2.5 opacity-40" />
+                        <input
+                          type="text"
+                          placeholder="Search files..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          className={`w-full pl-9 pr-4 py-2 text-xs rounded-xl border outline-none transition-all ${
+                            darkMode ? "bg-zinc-950 border-zinc-800 focus:border-violet-500" : "bg-zinc-50 border-zinc-200 focus:border-violet-500"
+                          }`}
+                        />
+                      </div>
+                      <div className={`flex p-1 rounded-lg border ${darkMode ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-200"}`}>
+                        <button onClick={() => setViewMode("list")} className={`p-1.5 rounded-md transition-all ${viewMode === "list" ? "bg-white dark:bg-zinc-800 shadow-sm text-violet-500" : "text-zinc-400"}`}>
+                          <List className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => setViewMode("grid")} className={`p-1.5 rounded-md transition-all ${viewMode === "grid" ? "bg-white dark:bg-zinc-800 shadow-sm text-violet-500" : "text-zinc-400"}`}>
+                          <Grid className="w-4 h-4" />
+                        </button>
+                      </div>
+                      <button 
+                        onClick={() => setActiveTab("uploader")}
+                        className="p-2.5 bg-violet-500 text-white rounded-xl shadow-lg shadow-violet-500/20 hover:scale-105 active:scale-95 transition-all"
+                        title="Bulk Uploader"
+                      >
+                        <UploadCloud className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {isLoading ? (
+                    <div className="py-20 flex flex-col items-center justify-center space-y-4">
+                      <Loader2 className="w-10 h-10 text-violet-500 animate-spin" />
+                      <p className="text-xs font-bold opacity-40 animate-pulse">Scanning Directory...</p>
+                    </div>
+                  ) : viewMode === "list" ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className={`border-b ${darkMode ? "border-zinc-800 text-zinc-500" : "border-zinc-100 text-zinc-400"} font-bold uppercase tracking-tighter`}>
+                            <th className="pb-4 pr-4 pl-2">Name</th>
+                            <th className="pb-4 px-4">Status</th>
+                            <th className="pb-4 px-4">Mapping</th>
+                            <th className="pb-4 px-4">Size</th>
+                            <th className="pb-4 px-4">Views</th>
+                            <th className="pb-4 pl-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-500/5">
+                          {currentFilteredVideos.map((video) => (
+                            <tr key={video.slug} className="group hover:bg-zinc-500/5 transition-colors">
+                              <td className="py-4 pr-4 pl-2">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-lg overflow-hidden bg-zinc-900 border border-zinc-800 shrink-0">
+                                    <img src={video.thumbnailUrl} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" referrerPolicy="no-referrer" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="font-bold truncate max-w-[200px]">{video.title}</div>
+                                    <div className="text-[10px] opacity-40 font-mono">/{video.slug}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-4 px-4">
+                                <div className="flex items-center gap-2">
+                                  {video.uploadStatus === "completed" ? (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 font-bold text-[9px] uppercase tracking-wider border border-emerald-500/20 shadow-sm shadow-emerald-500/5">
+                                      <CheckCircle2 className="w-2.5 h-2.5" /> Ready
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-500 font-bold text-[9px] uppercase tracking-wider border border-amber-500/20 shadow-sm shadow-amber-500/5">
+                                      <Loader2 className="w-2.5 h-2.5 animate-spin" /> Waiting {video.transcodingProgress ? `(${video.transcodingProgress}%)` : ""}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-4 px-4">
+                                <span className="text-[10px] font-mono font-bold bg-violet-500/5 text-violet-400 dark:text-violet-300 px-2.5 py-1 rounded-md border border-violet-500/10 shadow-sm">
+                                  {video.mapping || "—"}
+                                </span>
+                              </td>
+                              <td className="py-4 px-4 font-mono opacity-60">
+                                {video.fileSize || 124.5} MB
+                              </td>
+                              <td className="py-4 px-4 font-mono font-bold text-violet-500">
+                                {video.views || 0}
+                              </td>
+                              <td className="py-4 pl-4 text-right">
+                                <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button onClick={() => handleOpenEditModal(video)} className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500">
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <a href={`/${video.slug}`} target="_blank" className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500">
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </a>
+                                  <button onClick={() => setDeleteConfirmSlug(video.slug)} className="p-2 rounded-lg hover:bg-red-500/10 hover:text-red-500 transition-colors text-zinc-500">
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                      {currentFilteredVideos.map((video) => (
+                        <div key={video.slug} className={`group p-3 rounded-2xl border transition-all duration-300 ${darkMode ? "bg-zinc-950 border-zinc-900 hover:border-violet-500/50" : "bg-zinc-50 border-zinc-200 hover:border-violet-500/50"} cursor-pointer relative`}>
+                          <div className="aspect-video rounded-lg overflow-hidden bg-zinc-900 mb-3">
+                            <img src={video.thumbnailUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="text-[11px] font-bold truncate pr-4">{video.title}</h4>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-mono opacity-40">{video.fileSize} MB</span>
+                              <span className="text-[9px] font-bold text-violet-500">{video.views} Views</span>
+                            </div>
+                          </div>
+                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button className="p-1.5 rounded-lg bg-zinc-900/80 text-white backdrop-blur-sm">
+                              <MoreVertical className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Pagination */}
+                  {!isLimitReached && (
+                    <div className="flex items-center justify-between pt-4 border-t border-zinc-500/5">
+                      <p className="text-[10px] font-bold opacity-40 uppercase tracking-widest">Page {activePage} of {totalPages}</p>
+                      <div className="flex gap-2">
+                        <button 
+                          disabled={activePage === 1}
+                          onClick={() => setCurrentPage(prev => prev - 1)}
+                          className="px-3 py-1.5 text-[10px] font-bold rounded-lg border border-zinc-200 dark:border-zinc-800 disabled:opacity-50"
+                        >
+                          Previous
+                        </button>
+                        <button 
+                          disabled={activePage === totalPages}
+                          onClick={() => setCurrentPage(prev => prev + 1)}
+                          className="px-3 py-1.5 text-[10px] font-bold rounded-lg border border-zinc-200 dark:border-zinc-800 disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: BULK UPLOADER */}
+            {activeTab === "uploader" && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div 
+                  onDragOver={onDragOver}
+                  onDragLeave={onDragLeave}
+                  onDrop={onDrop}
+                  className={`relative p-12 rounded-3xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center text-center space-y-6 ${
+                    isDragging 
+                      ? "bg-violet-500/5 border-violet-500 scale-[1.01] shadow-[0_0_40px_rgba(139,92,246,0.1)]" 
+                      : darkMode ? "bg-zinc-900/20 border-zinc-800" : "bg-zinc-50 border-zinc-200"
+                  }`}
+                >
+                  <div className={`p-6 rounded-full transition-all duration-500 ${
+                    isDragging ? "bg-violet-500 text-white scale-110 rotate-12" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-400"
+                  }`}>
+                    <UploadCloud className="w-12 h-12" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-display font-black tracking-tight">Drop your video files here</h3>
+                    <p className="text-xs opacity-40 max-w-xs mx-auto">Supports MP4, MKV, AVI. Files will be transcoded via Bunny Stream for Adaptive Playback.</p>
+                  </div>
+                  <label className="px-6 py-2.5 bg-violet-500 text-white font-bold text-xs rounded-xl cursor-pointer hover:scale-105 active:scale-95 transition-all shadow-lg shadow-violet-500/20">
+                    Browse Local Files
+                    <input 
+                      type="file" 
+                      multiple 
+                      className="hidden" 
+                      accept="video/*" 
+                      onChange={(e) => e.target.files && handleFilesSelected(Array.from(e.target.files))} 
+                    />
+                  </label>
+
+                  {isDragging && (
+                    <div className="absolute inset-0 bg-violet-500/5 backdrop-blur-[1px] rounded-3xl flex items-center justify-center pointer-events-none">
+                      <div className="text-violet-500 font-black text-2xl animate-bounce">RELEASE TO DROP</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Upload Queue */}
+                {uploadQueue.length > 0 && (
+                  <div className={`p-6 rounded-2xl border ${darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-200 shadow-sm"} space-y-4`}>
+                    <div className="flex items-center justify-between border-b border-zinc-500/5 pb-4">
+                      <h4 className="text-sm font-bold flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-violet-500" />
+                        Live Upload Queue ({uploadQueue.length})
+                      </h4>
+                      <button onClick={() => setUploadQueue([])} className="text-[10px] font-bold text-zinc-400 hover:text-red-500 transition-colors">Clear All</button>
+                    </div>
+                    
+                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                      {uploadQueue.map((item) => (
+                        <div key={item.id} className={`p-4 rounded-xl border ${darkMode ? "bg-zinc-950 border-zinc-800" : "bg-zinc-50 border-zinc-100"} flex items-center gap-4 group transition-all hover:border-violet-500/30`}>
+                          <div className={`p-2.5 rounded-lg ${darkMode ? "bg-zinc-900" : "bg-white shadow-sm"} text-violet-500`}>
+                            <FileVideo className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-start mb-1">
+                              <div className="font-bold text-xs truncate max-w-[300px]">{item.file.name}</div>
+                              <span className={`text-[9px] font-black uppercase tracking-widest ${
+                                item.status === "completed" ? "text-emerald-500" : 
+                                item.status === "failed" ? "text-rose-500" : "text-violet-500 animate-pulse"
+                              }`}>
+                                {item.status}
+                              </span>
+                            </div>
+                            <div className="h-1.5 w-full bg-zinc-200 dark:bg-zinc-800 rounded-full overflow-hidden mb-1">
+                              <div 
+                                className={`h-full transition-all duration-300 ${
+                                  item.status === "failed" ? "bg-rose-500" : 
+                                  item.status === "completed" ? "bg-emerald-500" : "bg-violet-500"
+                                }`}
+                                style={{ width: `${item.progress}%` }}
+                              ></div>
+                            </div>
+                            <div className="flex justify-between text-[9px] font-mono opacity-40">
+                              <span>{(item.file.size / (1024 * 1024)).toFixed(2)} MB</span>
+                              <span>{item.progress}%</span>
+                            </div>
+                            {item.error && <p className="text-[9px] text-rose-500 mt-1 font-bold">Error: {item.error}</p>}
+                          </div>
+                          <div className="shrink-0 flex items-center gap-2">
+                            {item.status === "idle" && (
+                              <button 
+                                onClick={() => startUpload(item.id)}
+                                className="p-2 rounded-lg bg-violet-500 text-white hover:scale-105 active:scale-95 transition-all shadow-lg shadow-violet-500/20"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {item.status === "completed" && (
+                              <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-500">
+                                <CheckCircle2 className="w-4 h-4" />
+                              </div>
+                            )}
+                            <button 
+                              onClick={() => setUploadQueue(prev => prev.filter(i => i.id !== item.id))}
+                              className="p-2 rounded-lg hover:bg-rose-500/10 text-zinc-400 hover:text-rose-500 transition-colors"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* TAB 1: OVERVIEW */}
             {activeTab === "overview" && (
               <div className="space-y-8 animate-in fade-in duration-300">
@@ -610,9 +1054,6 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                     <div className="absolute top-0 right-0 w-24 h-24 bg-violet-500/5 rounded-full blur-2xl"></div>
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-[10px] uppercase tracking-wider font-bold opacity-60">Total Streams Viewed</span>
-                      <span className="p-2 rounded-xl bg-violet-500/10 text-violet-400">
-                        <Eye className="w-4 h-4" />
-                      </span>
                     </div>
                     <div className="text-3xl font-display font-black tracking-tight">{analytics?.totalViews ?? 0}</div>
                     <p className={`text-[10px] mt-1 font-mono ${darkMode ? "text-zinc-500" : "text-zinc-500"}`}>Cumulative active counts</p>
@@ -635,7 +1076,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
                   <div className={`p-6 rounded-2xl border ${darkMode ? "bg-zinc-900/30 border-zinc-900" : "bg-white border-zinc-200/80 shadow-sm"} relative overflow-hidden group`}>
                     <div className="absolute top-0 right-0 w-24 h-24 bg-fuchsia-500/5 rounded-full blur-2xl"></div>
                     <div className="flex items-center justify-between mb-3">
-                      <span className="text-[10px] uppercase tracking-wider font-bold opacity-60">R2 Storage Volume</span>
+                      <span className="text-[10px] uppercase tracking-wider font-bold opacity-60">Bunny Storage Volume</span>
                       <span className="p-2 rounded-xl bg-fuchsia-500/10 text-fuchsia-400">
                         <HardDrive className="w-4 h-4" />
                       </span>
@@ -829,229 +1270,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
               </div>
             )}
 
-            {/* TAB 2: ALL FILES */}
-            {activeTab === "files" && (
-              <div className={`p-6 rounded-2xl border ${darkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-white border-zinc-200 shadow-sm"} space-y-6 animate-in fade-in duration-300`}>
-                
-                {/* Search Bar & Stats Header */}
-                <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
-                  <div>
-                    <h3 className="text-base font-display font-bold">R2 Storage Stream Files</h3>
-                    <p className={`text-xs ${darkMode ? "text-zinc-400" : "text-zinc-500"}`}>
-                      Search, register, modify or strip active media pathways.
-                    </p>
-                  </div>
-                  
-                  {/* Search Control */}
-                  <div className="flex items-center gap-3 w-full md:w-auto shrink-0">
-                    {/* Search Input Box */}
-                    <div className="relative w-full sm:w-60 shrink-0">
-                      <Search className="w-4 h-4 absolute left-3 top-2.5 opacity-40" />
-                      <input
-                        type="text"
-                        placeholder="Search index by slug, title..."
-                        value={searchQuery}
-                        onChange={(e) => {
-                          setSearchQuery(e.target.value);
-                          setCurrentPage(1);
-                        }}
-                        className={`w-full pl-9 pr-4 py-2 text-xs rounded-xl border outline-none transition-all focus:ring-2 focus:ring-violet-500 ${
-                          darkMode 
-                            ? "bg-zinc-950 border-zinc-800 focus:border-violet-500 text-zinc-100" 
-                            : "bg-zinc-50 border-zinc-200 focus:border-violet-500 text-zinc-800"
-                        }`}
-                      />
-                    </div>
-                  </div>
-                </div>
 
-                {/* Video pathways table list */}
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className={`border-b ${darkMode ? "border-zinc-900 text-zinc-400" : "border-zinc-200 text-zinc-600"} font-semibold`}>
-                        <th className="pb-3 pr-4">Thumbnail</th>
-                        <th className="pb-3 px-4">Title</th>
-                        <th className="pb-3 px-4">Custom Slug</th>
-                        <th className="pb-3 px-4">Duration</th>
-                        <th className="pb-3 px-4 text-center">Views</th>
-                        <th className="pb-3 px-4 text-center">Size (MB)</th>
-                        <th className="pb-3 pl-4 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-500/5">
-                      {currentFilteredVideos.length > 0 ? (
-                        currentFilteredVideos.map((video) => (
-                          <tr key={video.slug} className="hover:bg-zinc-500/5 transition-colors">
-                            {/* Thumbnail */}
-                            <td className="py-3.5 pr-4 shrink-0">
-                              <div className="relative w-16 h-10 rounded-lg overflow-hidden bg-zinc-900 border border-zinc-800 shrink-0">
-                                <img 
-                                  src={video.thumbnailUrl} 
-                                  alt={video.title}
-                                  className="w-full h-full object-cover"
-                                  referrerPolicy="no-referrer"
-                                />
-                              </div>
-                            </td>
-                            {/* Title */}
-                            <td className="py-3.5 px-4 max-w-[200px]">
-                              <div className="font-bold opacity-90 truncate">{video.title}</div>
-                            </td>
-                            {/* Slug path */}
-                            <td className="py-3.5 px-4 font-mono text-[10px] text-violet-400">
-                              /{video.slug}
-                            </td>
-                            {/* Duration */}
-                            <td className="py-3.5 px-4 font-mono opacity-80">
-                              {video.duration || "00:00"}
-                            </td>
-                            {/* Total views */}
-                            <td className="py-3.5 px-4 font-mono text-center font-bold">
-                              {video.views ?? 0}
-                            </td>
-                            {/* Storage size */}
-                            <td className="py-3.5 px-4 font-mono text-center opacity-80">
-                              {video.fileSize || 124.5}
-                            </td>
-                            {/* Actions buttons */}
-                            <td className="py-3.5 pl-4 text-right">
-                              {deleteConfirmSlug === video.slug ? (
-                                <div className="flex items-center justify-end gap-1.5">
-                                  <button
-                                    onClick={() => handleDeleteVideo(video.slug)}
-                                    className="px-2 py-1 bg-red-600 text-white rounded font-semibold text-[10px] cursor-pointer"
-                                  >
-                                    Confirm
-                                  </button>
-                                  <button
-                                    onClick={() => setDeleteConfirmSlug(null)}
-                                    className={`px-2 py-1 border rounded text-[10px] cursor-pointer ${
-                                      darkMode ? "border-zinc-800 text-zinc-300" : "border-zinc-200 text-zinc-600"
-                                    }`}
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex items-center justify-end gap-1.5">
-                                  <button
-                                    onClick={() => handleOpenEditModal(video)}
-                                    className={`p-1.5 rounded-lg border cursor-pointer transition-colors ${
-                                      darkMode ? "border-zinc-800 hover:bg-zinc-800 text-zinc-300" : "border-zinc-200 hover:bg-zinc-100 text-zinc-700"
-                                    }`}
-                                    title="Edit properties"
-                                  >
-                                    <Edit2 className="w-3.5 h-3.5" />
-                                  </button>
-                                  <a
-                                    href={`/${video.slug}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className={`p-1.5 rounded-lg border cursor-pointer transition-colors flex items-center justify-center ${
-                                      darkMode ? "border-zinc-800 hover:bg-zinc-800 text-zinc-300" : "border-zinc-200 hover:bg-zinc-100 text-zinc-700"
-                                    }`}
-                                    title="Play stream (New tab)"
-                                  >
-                                    <Eye className="w-3.5 h-3.5" />
-                                  </a>
-                                  <button
-                                    onClick={() => setDeleteConfirmSlug(video.slug)}
-                                    className={`p-1.5 rounded-lg border cursor-pointer transition-colors ${
-                                      darkMode ? "border-red-900/50 hover:bg-red-950/20 text-red-400" : "border-red-200 hover:bg-red-50 text-red-600"
-                                    }`}
-                                    title="Delete entry"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={7} className="py-8 text-center opacity-50">
-                            {searchQuery ? "No indexing matches found." : "No registered streams present."}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Pagination Controls */}
-                {filteredVideos.length > 0 && (
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-zinc-500/5">
-                    <div className="text-xs opacity-60 font-medium">
-                      {isLimitReached ? (
-                        <span>Showing all {totalItems} items</span>
-                      ) : (
-                        <span>
-                          Showing {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, totalItems)} of {totalItems} items
-                        </span>
-                      )}
-                    </div>
-                    
-                    <div className="flex items-center gap-1.5">
-                      {/* Prev Button */}
-                      <button
-                        type="button"
-                        onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
-                        disabled={currentPage === 1 || isLimitReached}
-                        className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 select-none ${
-                          currentPage === 1 || isLimitReached
-                            ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
-                            : darkMode
-                              ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
-                              : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 shadow-sm cursor-pointer"
-                        }`}
-                      >
-                        Previous
-                      </button>
-
-                      {/* Page numbers */}
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => (
-                        <button
-                          key={pageNum}
-                          type="button"
-                          onClick={() => setCurrentPage(pageNum)}
-                          disabled={isLimitReached}
-                          className={`w-8 h-8 rounded-lg border text-xs font-mono font-bold transition-all select-none ${
-                            isLimitReached
-                              ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
-                              : activePage === pageNum
-                                ? "bg-violet-600 border-violet-600 text-white shadow-sm"
-                                : darkMode
-                                  ? "bg-zinc-900/50 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
-                                  : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50 cursor-pointer"
-                          }`}
-                        >
-                          {pageNum}
-                        </button>
-                      ))}
-
-                      {/* Next Button */}
-                      <button
-                        type="button"
-                        onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
-                        disabled={currentPage === totalPages || isLimitReached}
-                        className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center gap-1 select-none ${
-                          currentPage === totalPages || isLimitReached
-                            ? "opacity-40 cursor-not-allowed border-zinc-500/10 text-zinc-500"
-                            : darkMode
-                              ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-800 hover:text-white cursor-pointer"
-                              : "bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 shadow-sm cursor-pointer"
-                        }`}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-              </div>
-            )}
 
           </main>
 
@@ -1082,7 +1301,7 @@ export default function AdminDashboardView({ darkMode, navigate }: AdminDashboar
 
             <div className="mb-6">
               <h3 className="text-xl font-display font-bold">
-                {editingVideo ? `Edit Video: ${editingVideo.title}` : "Register a New R2 Stream"}
+                {editingVideo ? `Edit Video: ${editingVideo.title}` : "Register a New Stream"}
               </h3>
               <p className={`text-xs mt-1 ${darkMode ? "text-zinc-400" : "text-zinc-500"}`}>
                 Configure storage pathways, thumbnails and secure download gateways.

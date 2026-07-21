@@ -1,12 +1,15 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { fileURLToPath } from "url";
 import { MongoClient } from "mongodb";
 import http from "http";
 import https from "https";
+import AdmZip from "adm-zip";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 // Load environment variables
 dotenv.config();
@@ -53,6 +56,56 @@ function generateRandomSlug(length = 10): string {
   return result;
 }
 
+// Generate random mixed case alphanumeric string for mapping (capital + small letters + numbers)
+function generateRandomMapping(length = 12): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+// Get Content-Type for files
+function getContentType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.m3u8': return 'application/x-mpegURL';
+    case '.ts': return 'video/MP2T';
+    case '.mp4': return 'video/mp4';
+    case '.jpg': case '.jpeg': return 'image/jpeg';
+    case '.png': return 'image/png';
+    case '.webp': return 'image/webp';
+    case '.html': return 'text/html';
+    case '.css': return 'text/css';
+    case '.js': return 'application/javascript';
+    default: return 'application/octet-stream';
+  }
+}
+
+// Recursively walk directory to find files
+async function getFilesRecursive(dir: string): Promise<string[]> {
+  const dirents = await fs.promises.readdir(dir, { withFileTypes: true });
+  const files = await Promise.all(dirents.map((dirent) => {
+    const res = path.resolve(dir, dirent.name);
+    return dirent.isDirectory() ? getFilesRecursive(res) : res;
+  }));
+  return files.flat();
+}
+
+// Format duration from seconds to MM:SS or HH:MM:SS
+function formatDuration(seconds: number): string {
+  if (!seconds || isNaN(seconds)) return "00:00";
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  
+  if (hrs > 0) {
+    return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }
+  return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+}
+
 // Define custom session store
 interface DownloadSession {
   slug: string;
@@ -91,6 +144,34 @@ function writeVideos(videos: any[]) {
   } catch (error) {
     console.error("Error writing database:", error);
   }
+}
+
+// Bunny Stream API Helper
+async function bunnyApi(method: string, endpoint: string, body?: any) {
+  const apiKey = process.env.BUNNY_STREAM_API_KEY;
+  const libraryId = process.env.BUNNY_STREAM_LIBRARY_ID;
+  
+  if (!apiKey || !libraryId) {
+    throw new Error("Bunny Stream configuration missing (API Key or Library ID)");
+  }
+
+  const url = `https://video.bunnycdn.com/library/${libraryId}${endpoint}`;
+  const response = await fetch(url, {
+    method,
+    headers: {
+      "AccessKey": apiKey,
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.message || `Bunny API Error: ${response.statusText}`);
+  }
+
+  return response.json();
 }
 
 // Helper to read logs
@@ -186,6 +267,12 @@ async function ensureMongoSchemaAndColumns(db: any) {
     await col.updateMany({ views: { $exists: false } }, { $set: { views: 0 } });
     await col.updateMany({ downloads: { $exists: false } }, { $set: { downloads: 0 } });
     await col.updateMany({ createdAt: { $exists: false } }, { $set: { createdAt: defaultDate } });
+    
+    // New Fields for Bunny/R2 Workflow
+    await col.updateMany({ bunnyVideoId: { $exists: false } }, { $set: { bunnyVideoId: null } });
+    await col.updateMany({ uploadStatus: { $exists: false } }, { $set: { uploadStatus: "ready" } }); // ready, uploading, transcoding, migrating, completed
+    await col.updateMany({ transcodingProgress: { $exists: false } }, { $set: { transcodingProgress: 0 } });
+    await col.updateMany({ r2Url: { $exists: false } }, { $set: { r2Url: null } });
 
     console.log("MongoDB collections and columns verified successfully!");
   } catch (err) {
@@ -222,7 +309,7 @@ async function getMongoDb() {
 
 function mapVideoRecord(video: any, realViews: number): any {
   if (!video) return null;
-  const mappedSlug = video.slug || video.mapping || "";
+  const mappedMapping = video.mapping || video.slug || "";
   const mappedVideoUrl = video.videoUrl || video.hls_playlist_url || "";
   
   let mappedThumbnailUrl = video.thumbnailUrl;
@@ -236,7 +323,7 @@ function mapVideoRecord(video: any, realViews: number): any {
   }
 
   const mappedFileSize = video.fileSize || (video.size ? Number((video.size / (1024 * 1024)).toFixed(2)) : 124.5);
-  const mappedDownloadUrl = video.downloadUrl || (video.mp4_urls ? Object.values(video.mp4_urls)[0] : "") || mappedVideoUrl || "";
+  const mappedDownloadUrl = video.downloadUrl || (video.mp4_urls ? Object.values(video.mp4_urls)[0] : "") || (video.mp4_links ? Object.values(video.mp4_links)[0] : "") || mappedVideoUrl || "";
 
   let formattedDate = "2026-07-20";
   try {
@@ -263,13 +350,16 @@ function mapVideoRecord(video: any, realViews: number): any {
 
   return {
     ...video,
-    slug: mappedSlug,
+    mapping: mappedMapping,
+    slug: mappedMapping,
     videoUrl: mappedVideoUrl,
     thumbnailUrl: mappedThumbnailUrl,
     fileSize: mappedFileSize,
     downloadUrl: mappedDownloadUrl,
     createdAt: formattedDate,
     views: realViews,
+    mp4_urls: video.mp4_urls || video.mp4_links || {},
+    mp4_links: video.mp4_links || video.mp4_urls || {},
   };
 }
 
@@ -291,7 +381,7 @@ async function dbFetchVideos(): Promise<any[]> {
 
       // Fetch dynamic views from view_logs aggregation to be fast and accurate
       const viewCounts = await db.collection("view_logs").aggregate([
-        { $group: { _id: "$slug", count: { $sum: 1 } } }
+        { $group: { _id: "$mapping", count: { $sum: 1 } } }
       ]).toArray();
       
       const viewsMap = new Map<string, number>();
@@ -303,15 +393,15 @@ async function dbFetchVideos(): Promise<any[]> {
 
       // Map properties for user document structure compatibility and dynamic views
       return videos.map((video) => {
-        const mappedSlug = video.slug || video.mapping || "";
-        const realViews = (mappedSlug ? viewsMap.get(mappedSlug) : 0) || 0;
+        const mappedMapping = video.mapping || video.slug || "";
+        const realViews = (mappedMapping ? viewsMap.get(mappedMapping) : 0) || 0;
         return mapVideoRecord(video, realViews);
       });
     } catch (err) {
       console.error("Failed to fetch from MongoDB, falling back to JSON:", err);
     }
   }
-  return readVideos();
+  return readVideos().map((v: any) => mapVideoRecord(v, v.views || 0));
 }
 
 async function dbFetchVideoBySlug(slug: string): Promise<any | null> {
@@ -319,20 +409,23 @@ async function dbFetchVideoBySlug(slug: string): Promise<any | null> {
   if (db && isMongoActive) {
     try {
       const video = await db.collection("videos").findOne({
-        $or: [{ slug: slug }, { mapping: slug }]
+        $or: [{ mapping: slug }, { slug: slug }]
       });
       if (video) {
+        const mappedMapping = video.mapping || video.slug || "";
         // Compute actual views from view_logs
-        const realViews = await db.collection("view_logs").countDocuments({ slug });
+        const realViews = await db.collection("view_logs").countDocuments({
+          $or: [{ mapping: mappedMapping }, { slug: mappedMapping }]
+        });
         return mapVideoRecord(video, realViews);
       }
     } catch (err) {
-      console.error("Failed to find video by slug from MongoDB:", err);
+      console.error("Failed to find video by mapping from MongoDB:", err);
     }
   }
   const local = readVideos();
-  const matched = local.find((v) => v.slug === slug || v.mapping === slug) || null;
-  return matched ? mapVideoRecord(matched, 0) : null;
+  const matched = local.find((v) => v.mapping === slug || v.slug === slug) || null;
+  return matched ? mapVideoRecord(matched, matched.views || 0) : null;
 }
 
 function parseUserAgent(ua: string) {
@@ -393,7 +486,7 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
       const col = db.collection("view_logs");
       // Check if this IP viewed this video in the last 24 hours
       const existing = await col.findOne({
-        slug,
+        $or: [{ mapping: slug }, { slug: slug }],
         ip,
         timestamp: { $gte: twentyFourHoursAgo }
       });
@@ -404,6 +497,7 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
 
       // Record log
       await col.insertOne({
+        mapping: slug,
         slug,
         ip,
         userAgent,
@@ -413,8 +507,6 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
         timestamp
       });
 
-      // Removed direct write to 'videos' collection to keep it read-only.
-      // Views are now calculated dynamically from the view_logs collection.
       return true;
     } catch (err) {
       console.error("Failed to log view in MongoDB:", err);
@@ -424,7 +516,7 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
   // Fallback to local files
   const logs = readLogs();
   const existingLocal = logs.find(
-    (l) => l.slug === slug && l.ip === ip && new Date(l.timestamp) >= twentyFourHoursAgo
+    (l) => (l.mapping === slug || l.slug === slug) && l.ip === ip && new Date(l.timestamp) >= twentyFourHoursAgo
   );
 
   if (existingLocal) {
@@ -433,6 +525,7 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
 
   // Add local log
   logs.push({
+    mapping: slug,
     slug,
     ip,
     userAgent,
@@ -445,7 +538,7 @@ async function dbLogView(slug: string, ip: string, userAgent: string): Promise<b
 
   // Increment local video views
   const localVideos = readVideos();
-  const video = localVideos.find((v) => v.slug === slug);
+  const video = localVideos.find((v) => v.mapping === slug || v.slug === slug);
   if (video) {
     video.views = (video.views || 0) + 1;
     writeVideos(localVideos);
@@ -458,22 +551,26 @@ async function dbDeleteVideo(slug: string): Promise<boolean> {
   if (db && isMongoActive) {
     try {
       const col = db.collection("videos");
-      const result = await col.deleteOne({ slug });
+      const result = await col.deleteOne({
+        $or: [{ mapping: slug }, { slug: slug }]
+      });
       // Also delete view logs for this video
-      await db.collection("view_logs").deleteMany({ slug });
+      await db.collection("view_logs").deleteMany({
+        $or: [{ mapping: slug }, { slug: slug }]
+      });
       return (result.deletedCount || 0) > 0;
     } catch (err) {
       console.error("Failed to delete video on MongoDB:", err);
     }
   }
   const local = readVideos();
-  const filtered = local.filter((v) => v.slug !== slug);
+  const filtered = local.filter((v) => v.mapping !== slug && v.slug !== slug);
   if (local.length === filtered.length) return false;
   writeVideos(filtered);
   
   // Also delete local view logs
   const localLogs = readLogs();
-  const filteredLogs = localLogs.filter((l) => l.slug !== slug);
+  const filteredLogs = localLogs.filter((l) => l.mapping !== slug && l.slug !== slug);
   writeLogs(filteredLogs);
   return true;
 }
@@ -483,14 +580,17 @@ async function dbUpdateVideo(slug: string, updatedFields: any): Promise<boolean>
   if (db && isMongoActive) {
     try {
       const col = db.collection("videos");
-      const result = await col.updateOne({ slug }, { $set: updatedFields });
+      const result = await col.updateOne(
+        { $or: [{ mapping: slug }, { slug: slug }] },
+        { $set: updatedFields }
+      );
       return (result.matchedCount || 0) > 0;
     } catch (err) {
       console.error("Failed to update video on MongoDB:", err);
     }
   }
   const local = readVideos();
-  const idx = local.findIndex((v) => v.slug === slug);
+  const idx = local.findIndex((v) => v.mapping === slug || v.slug === slug);
   if (idx === -1) return false;
   local[idx] = { ...local[idx], ...updatedFields };
   writeVideos(local);
@@ -502,7 +602,9 @@ async function dbInsertVideo(newVideo: any): Promise<boolean> {
   if (db && isMongoActive) {
     try {
       const col = db.collection("videos");
-      const existing = await col.findOne({ slug: newVideo.slug });
+      const existing = await col.findOne({
+        $or: [{ mapping: newVideo.mapping }, { slug: newVideo.slug }]
+      });
       if (existing) return false;
       await col.insertOne(newVideo);
       return true;
@@ -511,7 +613,7 @@ async function dbInsertVideo(newVideo: any): Promise<boolean> {
     }
   }
   const local = readVideos();
-  if (local.some((v) => v.slug === newVideo.slug)) return false;
+  if (local.some((v) => v.mapping === newVideo.mapping || v.slug === newVideo.slug)) return false;
   local.push(newVideo);
   writeVideos(local);
   return true;
@@ -548,6 +650,296 @@ async function startServer() {
 
   // --- API ROUTES ---
 
+  // Initialize Bunny Stream Upload
+  app.post("/api/upload/init", async (req, res) => {
+    try {
+      const { title } = req.body;
+      if (!title) return res.status(400).json({ error: "Title is required" });
+
+      // 1. Create Video Object in Bunny Stream
+      const bunnyVideo = await bunnyApi("POST", "/videos", { title });
+      const bunnyVideoId = bunnyVideo.guid;
+
+      // 2. Create entry in our database
+      const mapping = generateRandomMapping(12);
+      const newVideo = {
+        slug: mapping,
+        title,
+        bunnyVideoId,
+        uploadStatus: "uploading",
+        transcodingProgress: 0,
+        createdAt: new Date().toISOString(),
+        videoUrl: "", // Will be updated after transcoding
+        thumbnailUrl: "",
+        views: 0,
+        mapping
+      };
+
+      await dbInsertVideo(newVideo);
+
+      res.json({
+        success: true,
+        bunnyVideoId,
+        libraryId: process.env.BUNNY_STREAM_LIBRARY_ID,
+        apiKey: process.env.BUNNY_STREAM_API_KEY, // WARNING: Only for dev, usually we proxy or use short-lived tokens
+        slug: mapping
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Complete upload to Bunny (from client)
+  app.post("/api/upload/complete/:slug", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      await dbUpdateVideo(slug, { uploadStatus: "transcoding", transcodingProgress: 0 });
+      res.json({ success: true, message: "Upload marked complete. Processing has started on Bunny Stream." });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Check Bunny Transcoding Status
+  app.get("/api/upload/status/:slug", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const video = await dbFetchVideoBySlug(slug);
+      if (!video || !video.bunnyVideoId) return res.status(404).json({ error: "Video not found" });
+
+      const bunnyStatus = await bunnyApi("GET", `/videos/${video.bunnyVideoId}`);
+      
+      // Status: 0 = Queued, 1 = Processing, 2 = Encoding, 3 = Finished, 4 = Resolution Finished, 5 = Failed
+      const statusMap: Record<number, string> = {
+        0: "queued", 1: "processing", 2: "encoding", 3: "completed", 4: "completed", 5: "failed"
+      };
+
+      const currentStatus = statusMap[bunnyStatus.status] || "processing";
+      const progress = bunnyStatus.encodeProgress || 0;
+
+      const updates: any = {
+        uploadStatus: currentStatus === "completed" ? "migrating" : "transcoding",
+        transcodingProgress: progress
+      };
+
+      if (currentStatus === "completed") {
+        if (bunnyStatus.length) {
+          updates.duration = formatDuration(bunnyStatus.length);
+        }
+        if (bunnyStatus.storageSize || bunnyStatus.size) {
+          const bytes = bunnyStatus.storageSize || bunnyStatus.size;
+          updates.fileSize = Number((bytes / (1024 * 1024)).toFixed(1));
+        }
+
+        // Trigger real background migration to Cloudflare R2
+        migrateBunnyToR2(slug);
+      } else if (currentStatus === "failed") {
+        updates.uploadStatus = "failed";
+      }
+
+      await dbUpdateVideo(slug, updates);
+
+      res.json({
+        status: currentStatus === "completed" ? "migrating" : currentStatus,
+        progress,
+        video: { ...video, ...updates }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Actual R2 Migration Helper Function
+  async function migrateBunnyToR2(slug: string): Promise<void> {
+    try {
+      const video = await dbFetchVideoBySlug(slug);
+      if (!video || !video.bunnyVideoId) {
+        console.error(`[R2-Migration] Video ${slug} not found or has no bunnyVideoId`);
+        return;
+      }
+
+      console.log(`[R2-Migration] Starting actual migration for ${slug} (${video.title})...`);
+      await dbUpdateVideo(slug, { uploadStatus: "migrating" });
+
+      const storageZone = process.env.BUNNY_STORAGE_ZONE_NAME;
+      const accessKey = process.env.BUNNY_STORAGE_PASSWORD;
+
+      if (!storageZone || !accessKey) {
+        throw new Error("Missing BUNNY_STORAGE_ZONE_NAME or BUNNY_STORAGE_PASSWORD environment variables");
+      }
+
+      // Initialize R2 client
+      const r2AccountId = process.env.R2_ACCOUNT_ID;
+      const r2Bucket = process.env.R2_BUCKET_NAME;
+      const r2AccessKey = process.env.R2_ACCESS_KEY_ID;
+      const r2SecretKey = process.env.R2_SECRET_ACCESS_KEY;
+      const rawPublicDomain = process.env.R2_PUBLIC_DOMAIN || "pub-xxx.r2.dev";
+      const r2PublicDomain = rawPublicDomain.replace(/^https?:\/\//i, "");
+
+      if (!r2AccountId || !r2Bucket || !r2AccessKey || !r2SecretKey) {
+        throw new Error("Missing Cloudflare R2 credentials (R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY)");
+      }
+
+      const s3 = new S3Client({
+        region: "auto",
+        endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
+        credentials: {
+          accessKeyId: r2AccessKey,
+          secretAccessKey: r2SecretKey,
+        },
+      });
+
+      const mappingCode = video.mapping || generateRandomMapping(12);
+
+      // Download URL format: https://storage.bunnycdn.com/{BUNNY_STORAGE_ZONE_NAME}/{Video ID}/?accessKey={BUNNY_STORAGE_PASSWORD}&download
+      const downloadZipUrl = `https://storage.bunnycdn.com/${storageZone}/${video.bunnyVideoId}/?accessKey=${accessKey}&download`;
+      console.log(`[R2-Migration] Downloading zip from: https://storage.bunnycdn.com/${storageZone}/${video.bunnyVideoId}/?...`);
+
+      const tempZipPath = path.join(os.tmpdir(), `${video.bunnyVideoId}.zip`);
+      const tempExtractDir = path.join(os.tmpdir(), `${video.bunnyVideoId}_extracted`);
+
+      // Ensure extract dir is clean
+      if (fs.existsSync(tempExtractDir)) {
+        await fs.promises.rm(tempExtractDir, { recursive: true, force: true });
+      }
+      await fs.promises.mkdir(tempExtractDir, { recursive: true });
+
+      // Download file using global fetch
+      const response = await fetch(downloadZipUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download zip from Bunny: ${response.status} ${response.statusText}`);
+      }
+      const buffer = await response.arrayBuffer();
+      await fs.promises.writeFile(tempZipPath, Buffer.from(buffer));
+      console.log(`[R2-Migration] Downloaded zip to ${tempZipPath}`);
+
+      // Unzip using adm-zip
+      const zip = new AdmZip(tempZipPath);
+      zip.extractAllTo(tempExtractDir, true);
+      console.log(`[R2-Migration] Unzipped files to ${tempExtractDir}`);
+
+      // Recursively read all files
+      const allFiles = await getFilesRecursive(tempExtractDir);
+      console.log(`[R2-Migration] Found ${allFiles.length} files to upload to R2`);
+
+      const mp4_links: Record<string, string> = {};
+      const hls_links: Record<string, string> = {};
+      let thumbnailUrl = "";
+      let playlist_m3u8_url = "";
+      let master_playlist_url = "";
+      let original_file_url = "";
+      let totalSize = 0;
+
+      // Loop and upload
+      for (const file of allFiles) {
+        const relativePath = path.relative(tempExtractDir, file).replace(/\\/g, "/");
+        const r2Key = `${mappingCode}/${relativePath}`;
+        const fileUrl = `https://${r2PublicDomain}/${r2Key}`;
+
+        const fileBuffer = await fs.promises.readFile(file);
+        const contentType = getContentType(file);
+        totalSize += fileBuffer.length;
+
+        // Upload to R2
+        await s3.send(new PutObjectCommand({
+          Bucket: r2Bucket,
+          Key: r2Key,
+          Body: fileBuffer,
+          ContentType: contentType
+        }));
+
+        // Map URLs based on files inside zip
+        const lowerPath = relativePath.toLowerCase();
+        if (lowerPath === "playlist.m3u8") {
+          playlist_m3u8_url = fileUrl;
+          master_playlist_url = fileUrl;
+        } else if (lowerPath.endsWith("/playlist.m3u8")) {
+          const parts = relativePath.split("/");
+          const quality = parts[parts.length - 2] || "unknown";
+          hls_links[quality] = fileUrl;
+        } else if (lowerPath.endsWith(".mp4")) {
+          const fileName = path.basename(relativePath);
+          const qualityMatch = fileName.match(/(\d{3,4}p)/i);
+          const quality = qualityMatch ? qualityMatch[1].toLowerCase() : "original";
+          mp4_links[quality] = fileUrl;
+
+          if (quality === "original" || !original_file_url) {
+            original_file_url = fileUrl;
+          }
+        } else if (lowerPath === "thumbnail.jpg" || lowerPath.endsWith("/thumbnail.jpg") || lowerPath.includes("thumbnail")) {
+          thumbnailUrl = fileUrl;
+        }
+      }
+
+      // Finalize URL fallbacks if some files are not perfectly named
+      if (!playlist_m3u8_url) {
+        const anyM3u8 = allFiles.find(f => f.endsWith(".m3u8"));
+        if (anyM3u8) {
+          const rel = path.relative(tempExtractDir, anyM3u8).replace(/\\/g, "/");
+          playlist_m3u8_url = `https://${r2PublicDomain}/${mappingCode}/${rel}`;
+          master_playlist_url = playlist_m3u8_url;
+        }
+      }
+
+      if (!thumbnailUrl) {
+        const anyImg = allFiles.find(f => f.endsWith(".jpg") || f.endsWith(".png") || f.endsWith(".webp"));
+        if (anyImg) {
+          const rel = path.relative(tempExtractDir, anyImg).replace(/\\/g, "/");
+          thumbnailUrl = `https://${r2PublicDomain}/${mappingCode}/${rel}`;
+        }
+      }
+
+      const calculatedSizeMB = Number((totalSize / (1024 * 1024)).toFixed(1));
+
+      // Prepare update object
+      const updates: any = {
+        uploadStatus: "completed",
+        mapping: mappingCode,
+        videoUrl: playlist_m3u8_url,
+        hls_playlist_url: playlist_m3u8_url,
+        playlist_m3u8_url: playlist_m3u8_url,
+        master_playlist_url: master_playlist_url,
+        downloadUrl: original_file_url || playlist_m3u8_url,
+        original_file_url: original_file_url || playlist_m3u8_url,
+        thumbnailUrl: thumbnailUrl || video.thumbnailUrl,
+        mp4_links,
+        hls_links,
+        fileSize: calculatedSizeMB || video.fileSize
+      };
+
+      await dbUpdateVideo(slug, updates);
+      console.log(`[R2-Migration] Completed actual migration for ${slug}! Total size: ${calculatedSizeMB} MB`);
+
+      // Clean up local temp files
+      try {
+        await fs.promises.rm(tempZipPath, { force: true });
+        await fs.promises.rm(tempExtractDir, { recursive: true, force: true });
+      } catch (cleanErr) {
+        console.warn(`[R2-Migration] Minor warning during temp cleanup:`, cleanErr);
+      }
+
+    } catch (err: any) {
+      console.error(`[R2-Migration] Actual migration failed for ${slug}:`, err);
+      await dbUpdateVideo(slug, { uploadStatus: "migration_failed", transcodingProgress: 100 });
+    }
+  }
+
+  // Migrate to R2 Workflow
+  app.post("/api/upload/migrate-r2", async (req, res) => {
+    try {
+      const { slug } = req.body;
+      const video = await dbFetchVideoBySlug(slug);
+      if (!video || !video.bunnyVideoId) return res.status(404).json({ error: "Video not found" });
+
+      // Start actual background migration
+      migrateBunnyToR2(slug);
+
+      res.json({ success: true, message: "Migration started in background" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Get task link configuration
   app.get("/api/config", (req, res) => {
     res.json({
@@ -558,10 +950,51 @@ async function startServer() {
     });
   });
 
-  // Get list of all videos (minimal info, hiding downloadUrl)
+  // Get list of all videos (minimal info, hiding downloadUrl, auto-syncing non-completed videos)
   app.get("/api/videos", async (req, res) => {
     try {
       const videos = await dbFetchVideos();
+      
+      // Auto-sync status for non-completed videos that have bunnyVideoId
+      const pendingVideos = videos.filter(v => v.bunnyVideoId && v.uploadStatus !== "completed" && v.uploadStatus !== "failed" && v.uploadStatus !== "migrating" && v.uploadStatus !== "migration_failed");
+      if (pendingVideos.length > 0) {
+        await Promise.all(pendingVideos.map(async (video) => {
+          try {
+            const bunnyStatus = await bunnyApi("GET", `/videos/${video.bunnyVideoId}`);
+            const statusMap: Record<number, string> = {
+              0: "queued", 1: "processing", 2: "encoding", 3: "completed", 4: "completed", 5: "failed"
+            };
+            const currentStatus = statusMap[bunnyStatus.status] || "processing";
+            const progress = bunnyStatus.encodeProgress || 0;
+            
+            const updates: any = {
+              uploadStatus: currentStatus === "completed" ? "migrating" : "transcoding",
+              transcodingProgress: progress
+            };
+
+            if (currentStatus === "completed") {
+              if (bunnyStatus.length) {
+                updates.duration = formatDuration(bunnyStatus.length);
+              }
+              if (bunnyStatus.storageSize || bunnyStatus.size) {
+                const bytes = bunnyStatus.storageSize || bunnyStatus.size;
+                updates.fileSize = Number((bytes / (1024 * 1024)).toFixed(1));
+              }
+
+              // Trigger actual background migration
+              migrateBunnyToR2(video.slug);
+            } else if (currentStatus === "failed") {
+              updates.uploadStatus = "failed";
+            }
+            
+            await dbUpdateVideo(video.slug, updates);
+            Object.assign(video, updates);
+          } catch (e) {
+            console.error(`Failed to sync status for video ${video.slug}:`, e);
+          }
+        }));
+      }
+
       const publicVideos = videos.map(({ downloadUrl, ...rest }) => rest);
       res.json(publicVideos);
     } catch (err) {
@@ -603,10 +1036,11 @@ async function startServer() {
         return res.status(400).json({ error: "Title, Video URL, and Download URL are required" });
       }
 
-      const videoSlug = slug || generateRandomSlug(10);
+      const videoMapping = slug || generateRandomMapping(12);
       
       const newVideo = {
-        slug: videoSlug,
+        slug: videoMapping,
+        mapping: videoMapping,
         title,
         description: "",
         videoUrl,
@@ -620,7 +1054,7 @@ async function startServer() {
 
       const success = await dbInsertVideo(newVideo);
       if (!success) {
-        return res.status(400).json({ error: "A video with this slug or title already exists." });
+        return res.status(400).json({ error: "A video with this mapping or title already exists." });
       }
 
       res.status(201).json(newVideo);
