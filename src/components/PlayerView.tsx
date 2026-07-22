@@ -148,8 +148,8 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
       "progress",
       "current-time",
       "duration",
-      "mute",
-      "volume",
+      "mute", // kept
+      // "volume" intentionally removed — no volume slider
       "captions",
       "settings",
       "pip",
@@ -172,7 +172,6 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
           keyboard: { global: true },
           ratio: "16:9",
           autoplay: false,
-          iconUrl: "/plyr.svg",
         });
         plyrInstance.current = p;
         return p;
@@ -191,7 +190,6 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
         keyboard: { global: true },
         ratio: "16:9",
         autoplay: false,
-        iconUrl: "/plyr.svg",
         settings: ["quality", "speed"],
         quality: {
           default: sources[0].size,
@@ -228,7 +226,6 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
         keyboard: { global: true },
         ratio: "16:9",
         autoplay: false,
-        iconUrl: "/plyr.svg",
         settings: ["quality", "speed"],
         quality: {
           default: 0,
@@ -265,96 +262,103 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
       initPlyrWithMp4Sources(mp4Fallback);
     }
 
-    if (isHls) {
-      if (Hls.isSupported()) {
-        hls = new Hls({
-          maxMaxBufferLength: 10, // Optimize buffering for smooth playback
-          enableWorker: true,
-          lowLatencyMode: true,
-        });
-        hlsInstance.current = hls;
+    try {
+      if (isHls) {
+        if (Hls.isSupported()) {
+          hls = new Hls({
+            maxMaxBufferLength: 10, // Optimize buffering for smooth playback
+            enableWorker: true,
+            lowLatencyMode: true,
+          });
+          hls.loadSource(activeSource);
+          hls.attachMedia(videoElement);
+          hlsInstance.current = hls;
 
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (hls && hls.levels && hls.levels.length > 1) {
-            initPlyrWithHlsLevels(hls);
-          } else {
-            // single-rendition HLS — prefer manual mp4 quality menu if we have one,
-            // otherwise just play the HLS stream with no quality menu
-            if (mp4Labels.length > 0) {
-              hls?.destroy();
-              hlsInstance.current = null;
-              initPlyrWithMp4Sources();
-            } else {
-              const p = new Plyr(videoElement, {
-                controls: baseControls,
-                tooltips: { controls: true, seek: true },
-                keyboard: { global: true },
-                ratio: "16:9",
-                autoplay: false,
-                iconUrl: "/plyr.svg",
-              });
-              plyrInstance.current = p;
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            try {
+              if (hls && hls.levels && hls.levels.length > 1) {
+                initPlyrWithHlsLevels(hls);
+              } else {
+                // single-rendition HLS — prefer manual mp4 quality menu if we have one,
+                // otherwise just play the HLS stream with no quality menu
+                if (mp4Labels.length > 0) {
+                  hls?.destroy();
+                  hlsInstance.current = null;
+                  initPlyrWithMp4Sources();
+                } else {
+                  const p = new Plyr(videoElement, {
+                    controls: baseControls,
+                    tooltips: { controls: true, seek: true },
+                    keyboard: { global: true },
+                    ratio: "16:9",
+                    autoplay: false,
+                  });
+                  plyrInstance.current = p;
+                }
+              }
+            } catch (e) {
+              console.error("Plyr init failed after MANIFEST_PARSED, keeping native controls:", e);
             }
-          }
-        });
+          });
 
-        hls.on(Hls.Events.ERROR, (event, data) => {
-          if (!data.fatal) return;
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              networkRetries++;
-              if (networkRetries <= MAX_RETRIES) {
-                console.log("fatal network error, retrying...");
-                hls?.startLoad();
-              } else {
-                console.warn("HLS network error unrecoverable, falling back to MP4");
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            if (!data.fatal) return;
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                networkRetries++;
+                if (networkRetries <= MAX_RETRIES) {
+                  console.log("fatal network error, retrying...");
+                  hls?.startLoad();
+                } else {
+                  console.warn("HLS network error unrecoverable, falling back to MP4");
+                  fallbackToMp4();
+                }
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                mediaRetries++;
+                if (mediaRetries <= MAX_RETRIES) {
+                  console.log("fatal media error, retrying...");
+                  hls?.recoverMediaError();
+                } else {
+                  console.warn("HLS media error unrecoverable, falling back to MP4");
+                  fallbackToMp4();
+                }
+                break;
+              default:
+                console.warn("Unrecoverable HLS error, falling back to MP4");
                 fallbackToMp4();
-              }
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              mediaRetries++;
-              if (mediaRetries <= MAX_RETRIES) {
-                console.log("fatal media error, retrying...");
-                hls?.recoverMediaError();
-              } else {
-                console.warn("HLS media error unrecoverable, falling back to MP4");
-                fallbackToMp4();
-              }
-              break;
-            default:
-              console.warn("Unrecoverable HLS error, falling back to MP4");
-              fallbackToMp4();
-              break;
+                break;
+            }
+          });
+        } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
+          // Native HLS (Safari) — no per-level quality API here, so offer
+          // manual quality switching via the mp4 renditions instead when available
+          if (mp4Labels.length > 0) {
+            initPlyrWithMp4Sources();
+          } else {
+            videoElement.src = activeSource;
+            const p = new Plyr(videoElement, {
+              controls: baseControls,
+              tooltips: { controls: true, seek: true },
+              keyboard: { global: true },
+              ratio: "16:9",
+              autoplay: false,
+            });
+            plyrInstance.current = p;
           }
-        });
-
-        hls.loadSource(activeSource);
-        hls.attachMedia(videoElement);
-      } else if (videoElement.canPlayType("application/vnd.apple.mpegurl")) {
-        // Native HLS (Safari) — no per-level quality API here, so offer
-        // manual quality switching via the mp4 renditions instead when available
-        if (mp4Labels.length > 0) {
+        } else if (mp4Labels.length > 0) {
           initPlyrWithMp4Sources();
         } else {
-          videoElement.src = activeSource;
-          const p = new Plyr(videoElement, {
-            controls: baseControls,
-            tooltips: { controls: true, seek: true },
-            keyboard: { global: true },
-            ratio: "16:9",
-            autoplay: false,
-            iconUrl: "/plyr.svg",
-          });
-          plyrInstance.current = p;
+          setError("Your browser does not support HLS streaming, and no direct MP4 is available for this video.");
         }
-      } else if (mp4Labels.length > 0) {
-        initPlyrWithMp4Sources();
       } else {
-        setError("Your browser does not support HLS streaming, and no direct MP4 is available for this video.");
+        // Regular MP4 — still offer quality switching if multiple renditions exist
+        initPlyrWithMp4Sources(activeSource);
       }
-    } else {
-      // Regular MP4 — still offer quality switching if multiple renditions exist
-      initPlyrWithMp4Sources(activeSource);
+    } catch (e) {
+      // Whatever went wrong, the <video controls> attribute keeps native
+      // playback buttons working while we surface the error to the console.
+      console.error("Player init failed, falling back to native controls:", e);
     }
 
     return () => {
@@ -479,6 +483,7 @@ export default function PlayerView({ mapping, darkMode, navigate }: PlayerViewPr
             <video
               ref={videoRef}
               playsInline
+              controls
               className="w-full h-full"
               poster={fixUrl(video.thumbnailUrl)}
             >
